@@ -31,3 +31,8 @@ jobs:
         run: |
           gh release view dev >/dev/null 2>&1 || gh release create dev --prerelease --title "singerOS dev"
           gh release upload dev singerOS-linux-amd64 --clobber
+
+      - name: Verify deployed RN business URL
+        run: |
+          curl -fsS --retry 3 --connect-timeout 5 https://www4399.sbs:18443/singeros/healthz
+          curl -fsS --retry 3 --connect-timeout 5 https://www4399.sbs:18443/singeros/ | grep -q 'Opus 256 kbps'
