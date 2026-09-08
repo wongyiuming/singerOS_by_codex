@@ -45,45 +45,15 @@ jobs:
           gh release view dev >/dev/null 2>&1 || gh release create dev --prerelease --title "singerOS dev"
           gh release upload dev singerOS-linux-amd64 --clobber
 
-  deploy-rn:
-    needs: build
-    runs-on: self-hosted
-    timeout-minutes: 10
-    steps:
-      - name: Guard SingerOS deployment boundary
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(hostname)" = "racknerd-2ee08ce"
-          test -d /opt/singeros
-          test "$(docker inspect -f '{{.Name}}' singeros_app)" = "/singeros_app"
-          test -z "$(docker ps -a --filter name='^/singeros_app$' --format '{{.Names}}' | grep -v '^singeros_app$' || true)"
-      - name: Download exact build
-        uses: actions/download-artifact@v4
-        with:
-          name: singerOS-linux-amd64-${{ github.sha }}
-          path: /tmp/singeros-deploy-${{ github.sha }}
-      - name: Deploy only SingerOS app binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          SRC="/tmp/singeros-deploy-$GITHUB_SHA/singerOS-linux-amd64"
-          test -s "$SRC"
-          chmod 0755 "$SRC"
-          install -m 0755 "$SRC" /opt/singeros/singerOS.new
-          mv -f /opt/singeros/singerOS.new /opt/singeros/singerOS
-          docker restart singeros_app >/dev/null
-          rm -rf "/tmp/singeros-deploy-$GITHUB_SHA"
-          echo "DEPLOYED_TO_RN=$GITHUB_SHA"
-
   verify-rn:
-    needs: deploy-rn
+    needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: Verify actual public SingerOS business
+      - name: Verify RN pulled and deployed exact commit
         run: |
           set -euo pipefail
-          for i in $(seq 1 18); do
+          for i in $(seq 1 36); do
             BODY="$(curl -fsS --connect-timeout 5 --max-time 8 https://www4399.sbs:18443/singeros/healthz || true)"
             echo "$BODY"
             if printf '%s' "$BODY" | grep -Fq "$GITHUB_SHA"; then
