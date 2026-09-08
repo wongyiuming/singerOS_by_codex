@@ -67,14 +67,14 @@ jobs:
           docker restart singeros_app >/dev/null
           rm -rf "/tmp/singeros-deploy-$GITHUB_SHA"
           for i in $(seq 1 12); do
-            BODY="$(curl -fsS http://127.0.0.1:8080/singeros/healthz || true)"
+            BODY="$(docker exec singeros_app sh -c 'wget -qO- http://127.0.0.1:8080/singeros/healthz' || true)"
             if [[ "$BODY" == *"$GITHUB_SHA"* ]]; then
               echo "RN_LOCAL_DEPLOYED_COMMIT=$GITHUB_SHA"
               exit 0
             fi
             sleep 1
           done
-          echo "SingerOS local health did not switch to $GITHUB_SHA" >&2
+          echo "SingerOS container health did not switch to $GITHUB_SHA" >&2
           exit 1
 
   verify-rn:
