@@ -14,13 +14,15 @@ jobs:
   package:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch static dbclient
+      - name: Fetch static Dropbear client bundle
         run: |
-          curl -fL --retry 3 -o dropbearmulti_amd64 https://github.com/clearml/dropbear/releases/download/DROPBEAR_2026.94/dropbearmulti_amd64
-          echo '7f4755c905de6f8c771f028bbb3370d6b54289b0b9c6fe150329188d6dd5da0e  dropbearmulti_amd64' | sha256sum -c -
-          chmod +x dropbearmulti_amd64
+          curl -fL --retry 3 -o dropbear.tar.xz https://github.com/sagemathinc/dropbear/releases/download/main/dropbear-x86_64-linux-musl.tar.xz
+          echo '52b2bbe0027ac12200a84ffd1308e638f20fd8dfe503a5e19e1d275bf4b647b3  dropbear.tar.xz' | sha256sum -c -
+          tar -xJf dropbear.tar.xz
+          cp dropbear-x86_64-linux-musl/dbclient ./dbclient
+          chmod +x dbclient
       - uses: actions/upload-artifact@v4
         with:
           name: static-dbclient-amd64
-          path: dropbearmulti_amd64
+          path: dbclient
           if-no-files-found: error
