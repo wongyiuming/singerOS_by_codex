@@ -47,7 +47,7 @@ jobs:
 
   deploy-rn:
     needs: build
-    runs-on: [self-hosted, Linux, X64, rn-preproduction]
+    runs-on: self-hosted
     timeout-minutes: 10
     steps:
       - name: Guard SingerOS deployment boundary
