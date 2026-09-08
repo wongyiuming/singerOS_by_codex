@@ -1,0 +1,25 @@
+name: ops-ssh-client
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ssh-client.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch static dbclient
+        run: |
+          curl -fL --retry 3 -o dropbearmulti_amd64 https://github.com/clearml/dropbear/releases/download/DROPBEAR_2026.94/dropbearmulti_amd64
+          echo '7f4755c905de6f8c771f028bbb3370d6b54289b0b9c6fe150329188d6dd5da0e  dropbearmulti_amd64' | sha256sum -c -
+          chmod +x dropbearmulti_amd64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: static-dbclient-amd64
+          path: dropbearmulti_amd64
+          if-no-files-found: error
