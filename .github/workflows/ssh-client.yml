@@ -23,7 +23,8 @@ jobs:
           chmod +x dbclient
       - name: Resolve RN target
         run: |
-          getent ahostsv4 www4399.sbs | head -1\n      - uses: actions/upload-artifact@v4
+          getent ahostsv4 www4399.sbs | head -1
+      - uses: actions/upload-artifact@v4
         with:
           name: static-dbclient-amd64
           path: dbclient
