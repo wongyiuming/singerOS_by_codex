@@ -48,57 +48,7 @@ type Recording struct {
 	Meta     map[string]any `json:"meta,omitempty"`
 }
 
-var safeID = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,96}package main
-
-import (
-	"encoding/json"
-	"errors"
-	"flag"
-	"fmt"
-	"io"
-	"log"
-	"mime"
-	"net/http"
-	"os"
-	"path/filepath"
-	"regexp"
-	"sort"
-	"strconv"
-	"strings"
-	"sync"
-	"time"
-
-	"github.com/gin-gonic/gin"
-)
-
-const (
-	maxChunkBytes = int64(16 << 20)
-	appName       = "singerOS"
-)
-
-type Session struct {
-	ID        string    `json:"id"`
-	StartedAt time.Time `json:"started_at"`
-	Seq       int       `json:"seq"`
-	MIME      string    `json:"mime"`
-	Bytes     int64     `json:"bytes"`
-}
-
-type Store struct {
-	mu       sync.Mutex
-	dir      string
-	sessions map[string]*Session
-}
-
-type Recording struct {
-	ID       string         `json:"id"`
-	File     string         `json:"file"`
-	Bytes    int64          `json:"bytes"`
-	Modified time.Time      `json:"modified"`
-	Meta     map[string]any `json:"meta,omitempty"`
-}
-
-)
+var safeID = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,96}$`)
 var buildCommit = "dev"
 
 func newID() string {
