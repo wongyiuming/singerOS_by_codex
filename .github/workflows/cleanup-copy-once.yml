@@ -1,0 +1,34 @@
+name: cleanup-copy-once
+on:
+  push:
+    paths: ['.github/workflows/cleanup-copy-once.yml']
+permissions:
+  contents: write
+jobs:
+  edit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Simplify UI copy
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('main.go')
+          s = p.read_text()
+          replacements = {
+            '高保真车载 K 歌 · 本地实时 DSP · 云端录音': '车载 K 歌',
+            '把车厢变成<br>你的监听室。': '录音与监听',
+            '只处理被判定为持续反馈的窄频点，不自动降低整条人声。': '动态反馈抑制',
+            '服务器端成品 · 随录随存': '录音文件',
+          }
+          for old, new in replacements.items():
+              if old not in s:
+                  raise SystemExit(f'missing text: {old}')
+              s = s.replace(old, new)
+          p.write_text(s)
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add main.go
+          git commit -m 'ui: simplify copy'
+          git push
