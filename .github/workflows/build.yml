@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: singeros-rn
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -24,24 +28,73 @@ jobs:
           GOOS: linux
           GOARCH: amd64
           CGO_ENABLED: 0
-        run: go build -trimpath -ldflags="-s -w -X main.buildCommit=$GITHUB_SHA" -o singerOS-linux-amd64 .
+        run: |
+          go build -trimpath -ldflags="-s -w -X main.buildCommit=$GITHUB_SHA" -o singerOS-linux-amd64 .
+          sha256sum singerOS-linux-amd64
+      - name: Keep exact build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: singerOS-linux-amd64-${{ github.sha }}
+          path: singerOS-linux-amd64
+          if-no-files-found: error
+          retention-days: 3
       - name: Publish dev binary
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view dev >/dev/null 2>&1 || gh release create dev --prerelease --title "singerOS dev"
           gh release upload dev singerOS-linux-amd64 --clobber
-      - name: Verify deployed RN business commit
+
+  deploy-rn:
+    needs: build
+    runs-on: [self-hosted, Linux, X64, rn-preproduction]
+    timeout-minutes: 10
+    steps:
+      - name: Guard SingerOS deployment boundary
+        shell: bash
         run: |
-          for i in $(seq 1 24); do
+          set -euo pipefail
+          test "$(hostname)" = "racknerd-2ee08ce"
+          test -d /opt/singeros
+          test "$(docker inspect -f '{{.Name}}' singeros_app)" = "/singeros_app"
+          test -z "$(docker ps -a --filter name='^/singeros_app$' --format '{{.Names}}' | grep -v '^singeros_app$' || true)"
+      - name: Download exact build
+        uses: actions/download-artifact@v4
+        with:
+          name: singerOS-linux-amd64-${{ github.sha }}
+          path: /tmp/singeros-deploy-${{ github.sha }}
+      - name: Deploy only SingerOS app binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="/tmp/singeros-deploy-$GITHUB_SHA/singerOS-linux-amd64"
+          test -s "$SRC"
+          chmod 0755 "$SRC"
+          install -m 0755 "$SRC" /opt/singeros/singerOS.new
+          mv -f /opt/singeros/singerOS.new /opt/singeros/singerOS
+          docker restart singeros_app >/dev/null
+          rm -rf "/tmp/singeros-deploy-$GITHUB_SHA"
+          echo "DEPLOYED_TO_RN=$GITHUB_SHA"
+
+  verify-rn:
+    needs: deploy-rn
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify actual public SingerOS business
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 18); do
             BODY="$(curl -fsS --connect-timeout 5 --max-time 8 https://www4399.sbs:18443/singeros/healthz || true)"
             echo "$BODY"
             if printf '%s' "$BODY" | grep -Fq "$GITHUB_SHA"; then
-              curl -fsS --connect-timeout 5 --max-time 8 https://www4399.sbs:18443/singeros/ | grep -Fq 'Tesla vocal console'
+              PAGE="$(curl -fsS --connect-timeout 5 --max-time 8 https://www4399.sbs:18443/singeros/)"
+              printf '%s' "$PAGE" | grep -Fq 'Tesla vocal console'
+              printf '%s' "$PAGE" | grep -Fq 'value="85"'
+              printf '%s' "$PAGE" | grep -Fq 'Adaptive feedback suppression'
               echo "RN_DEPLOYED_COMMIT=$GITHUB_SHA"
               exit 0
             fi
             sleep 5
           done
-          echo "RN did not deploy commit $GITHUB_SHA" >&2
+          echo "RN public endpoint did not switch to $GITHUB_SHA" >&2
           exit 1
