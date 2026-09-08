@@ -56,11 +56,11 @@ jobs:
           for i in $(seq 1 36); do
             BODY="$(curl -fsS --connect-timeout 5 --max-time 8 https://www4399.sbs:18443/singeros/healthz || true)"
             echo "$BODY"
-            if printf '%s' "$BODY" | grep -Fq "$GITHUB_SHA"; then
+            if [[ "$BODY" == *"$GITHUB_SHA"* ]]; then
               PAGE="$(curl -fsS --connect-timeout 5 --max-time 8 https://www4399.sbs:18443/singeros/)"
-              printf '%s' "$PAGE" | grep -Fq 'Tesla vocal console'
-              printf '%s' "$PAGE" | grep -Fq 'value="85"'
-              printf '%s' "$PAGE" | grep -Fq 'Adaptive feedback suppression'
+              [[ "$PAGE" == *'Tesla vocal console'* ]]
+              [[ "$PAGE" == *'value="85"'* ]]
+              [[ "$PAGE" == *'Adaptive feedback suppression'* ]]
               echo "RN_DEPLOYED_COMMIT=$GITHUB_SHA"
               exit 0
             fi
