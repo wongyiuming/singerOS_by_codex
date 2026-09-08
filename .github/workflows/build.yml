@@ -38,22 +38,54 @@ jobs:
           path: singerOS-linux-amd64
           if-no-files-found: error
           retention-days: 3
-      - name: Publish dev binary
-        env:
-          GH_TOKEN: ${{ github.token }}
+
+  deploy-rn:
+    needs: build
+    runs-on: [self-hosted, Linux, X64, singeros-rn]
+    timeout-minutes: 10
+    steps:
+      - name: Guard SingerOS boundary
+        shell: bash
         run: |
-          gh release view dev >/dev/null 2>&1 || gh release create dev --prerelease --title "singerOS dev"
-          gh release upload dev singerOS-linux-amd64 --clobber
+          set -euo pipefail
+          test "$(hostname)" = "racknerd-2ee08ce"
+          test -d /opt/singeros
+          test "$(docker inspect -f '{{.Name}}' singeros_app)" = "/singeros_app"
+      - name: Download exact build
+        uses: actions/download-artifact@v4
+        with:
+          name: singerOS-linux-amd64-${{ github.sha }}
+          path: /tmp/singeros-deploy-${{ github.sha }}
+      - name: Deploy SingerOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="/tmp/singeros-deploy-$GITHUB_SHA/singerOS-linux-amd64"
+          test -s "$SRC"
+          install -m 0755 "$SRC" /opt/singeros/singerOS.new
+          mv -f /opt/singeros/singerOS.new /opt/singeros/singerOS
+          docker restart singeros_app >/dev/null
+          rm -rf "/tmp/singeros-deploy-$GITHUB_SHA"
+          for i in $(seq 1 12); do
+            BODY="$(curl -fsS http://127.0.0.1:8080/singeros/healthz || true)"
+            if [[ "$BODY" == *"$GITHUB_SHA"* ]]; then
+              echo "RN_LOCAL_DEPLOYED_COMMIT=$GITHUB_SHA"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "SingerOS local health did not switch to $GITHUB_SHA" >&2
+          exit 1
 
   verify-rn:
-    needs: build
+    needs: deploy-rn
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Verify RN pulled and deployed exact commit
+      - name: Verify public SingerOS
         run: |
           set -euo pipefail
-          for i in $(seq 1 36); do
+          for i in $(seq 1 18); do
             BODY="$(curl -fsS --connect-timeout 5 --max-time 8 https://www4399.sbs:18443/singeros/healthz || true)"
             echo "$BODY"
             if [[ "$BODY" == *"$GITHUB_SHA"* ]]; then
@@ -64,7 +96,7 @@ jobs:
               echo "RN_DEPLOYED_COMMIT=$GITHUB_SHA"
               exit 0
             fi
-            sleep 5
+            sleep 3
           done
           echo "RN public endpoint did not switch to $GITHUB_SHA" >&2
           exit 1
