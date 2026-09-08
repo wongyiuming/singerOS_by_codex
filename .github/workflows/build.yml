@@ -24,15 +24,24 @@ jobs:
           GOOS: linux
           GOARCH: amd64
           CGO_ENABLED: 0
-        run: go build -trimpath -ldflags="-s -w" -o singerOS-linux-amd64 .
+        run: go build -trimpath -ldflags="-s -w -X main.buildCommit=$GITHUB_SHA" -o singerOS-linux-amd64 .
       - name: Publish dev binary
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view dev >/dev/null 2>&1 || gh release create dev --prerelease --title "singerOS dev"
           gh release upload dev singerOS-linux-amd64 --clobber
-
-      - name: Verify deployed RN business URL
+      - name: Verify deployed RN business commit
         run: |
-          curl -fsS --retry 3 --connect-timeout 5 https://www4399.sbs:18443/singeros/healthz
-          curl -fsS --retry 3 --connect-timeout 5 https://www4399.sbs:18443/singeros/ | grep -q 'Opus 256 kbps'
+          for i in $(seq 1 24); do
+            BODY="$(curl -fsS --connect-timeout 5 --max-time 8 https://www4399.sbs:18443/singeros/healthz || true)"
+            echo "$BODY"
+            if printf '%s' "$BODY" | grep -Fq "$GITHUB_SHA"; then
+              curl -fsS --connect-timeout 5 --max-time 8 https://www4399.sbs:18443/singeros/ | grep -Fq 'Tesla vocal console'
+              echo "RN_DEPLOYED_COMMIT=$GITHUB_SHA"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "RN did not deploy commit $GITHUB_SHA" >&2
+          exit 1
