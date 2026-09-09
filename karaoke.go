@@ -39,27 +39,32 @@ type KaraokeCue struct {
 type KaraokeTrack struct {
 	Mode           string       `json:"mode"`
 	Version        string       `json:"version"`
-	SourceFile     string       `json:"source_file"`
+	SourceType     string       `json:"source_type"`
+	ExternalID     string       `json:"external_id,omitempty"`
+	SourceFile     string       `json:"source_file,omitempty"`
 	SourcePage     string       `json:"source_page"`
 	License        string       `json:"license"`
+	Language       string       `json:"language"`
 	LyricsLanguage string       `json:"lyrics_language"`
 	Duration       float64      `json:"duration_seconds"`
 	Bytes          int64        `json:"bytes"`
-	URL            string       `json:"url"`
+	URL            string       `json:"url,omitempty"`
 	Lyrics         []KaraokeCue `json:"lyrics"`
 	SyncedAt       string       `json:"synced_at_shanghai"`
 }
 
 type KaraokeSong struct {
-	ID      string                  `json:"id"`
-	Title   string                  `json:"title"`
-	Artist  string                  `json:"artist"`
-	Version string                  `json:"version"`
-	Tracks  map[string]KaraokeTrack `json:"tracks"`
+	ID       string                  `json:"id"`
+	Title    string                  `json:"title"`
+	Artist   string                  `json:"artist"`
+	Version  string                  `json:"version"`
+	Language string                  `json:"language"`
+	Tracks   map[string]KaraokeTrack `json:"tracks"`
 }
 
 type KaraokeCatalog struct {
 	Provider      string        `json:"provider"`
+	Language      string        `json:"language"`
 	LastCrawl     string        `json:"last_crawl_shanghai"`
 	NextCrawl     string        `json:"next_crawl_shanghai"`
 	IntervalHours int           `json:"interval_hours"`
@@ -69,27 +74,41 @@ type KaraokeCatalog struct {
 }
 
 type karaokeSeedTrack struct {
-	Mode, Version, FileTitle, Lang, License string
+	Mode             string
+	Version          string
+	SourceType       string
+	VideoID          string
+	SearchQuery      string
+	LyricsURL        string
+	FileTitle        string
+	Lang             string
+	ExpectedDuration float64
+	Language         string
+	LyricsLanguage   string
+	License          string
 }
 
 type karaokeSeedSong struct {
-	ID, Title, Artist, Version string
-	Tracks                     []karaokeSeedTrack
+	ID, Title, Artist, Version, Language string
+	Tracks                               []karaokeSeedTrack
 }
 
 var karaokeSeeds = []karaokeSeedSong{
 	{
-		ID: "kazakhstan-2006", Title: "My Kazakhstan", Artist: "Kazakhstan national anthem", Version: "2006",
+		ID: "anthony-wong-walk-sing-1993", Title: "邊走邊唱", Artist: "黃耀明", Version: "《借借你的愛》1993 錄音室版", Language: "粵語",
 		Tracks: []karaokeSeedTrack{
-			{Mode: "original", Version: "Kazakhstan 2006 vocal edition", FileTitle: "File:Kazakhstan 2006.ogg", Lang: "zh-cn", License: "Public domain / Wikimedia Commons"},
-			{Mode: "accompaniment", Version: "U.S. Navy Band 2009 instrumental", FileTitle: "File:Kazakhstan national anthem, played by the U.S. Navy Band.ogg", Lang: "en", License: "Public domain / U.S. Navy"},
-		},
-	},
-	{
-		ID: "auld-lang-syne", Title: "Auld Lang Syne", Artist: "Traditional", Version: "two matched performances",
-		Tracks: []karaokeSeedTrack{
-			{Mode: "original", Version: "Bautsch 2025 vocal", FileTitle: "File:AuldLangSyne.ogg", Lang: "en", License: "CC0 1.0 / Wikimedia Commons"},
-			{Mode: "accompaniment", Version: "U.S. Navy Band 1997 instrumental", FileTitle: "File:Auld Lang Syne - U.S. Navy Band.ogg", Lang: "en", License: "Public domain / U.S. Navy"},
+			{
+				Mode: "original", Version: "1993 錄音室版 · 原唱", SourceType: "youtube",
+				VideoID: "lPiSb7s3JPQ", SearchQuery: "邊走邊唱 黃耀明 伴奏",
+				LyricsURL: "https://www.5nd.com/gecilrc/75989.htm", ExpectedDuration: 341,
+				Language: "粵語", LyricsLanguage: "zh-Hant-HK", License: "YouTube 嵌入播放；商用正式版需接授权音源",
+			},
+			{
+				Mode: "accompaniment", Version: "1993 編曲對應 · 純音樂伴奏", SourceType: "youtube",
+				VideoID: "aiQ5OyTZVu0", SearchQuery: "邊走邊唱 黃耀明 伴奏",
+				LyricsURL: "https://www.5nd.com/gecilrc/75989.htm", ExpectedDuration: 341,
+				Language: "粵語", LyricsLanguage: "zh-Hant-HK", License: "YouTube 嵌入播放；商用正式版需接授权KTV音源",
+			},
 		},
 	},
 }
@@ -122,7 +141,7 @@ func newKaraokeService(dataDir string) *KaraokeService {
 		root: root, assets: assets,
 		client:   &http.Client{Timeout: 45 * time.Second},
 		interval: 2 * time.Hour,
-		catalog:  KaraokeCatalog{Provider: "wikimedia-commons-curated", IntervalHours: 2, Songs: []KaraokeSong{}},
+		catalog:  KaraokeCatalog{Provider: "cantonese-karaoke-curated", Language: "粵語", IntervalHours: 2, Songs: []KaraokeSong{}},
 	}
 	s.load()
 	go s.scheduler()
@@ -135,7 +154,12 @@ func (s *KaraokeService) load() {
 		return
 	}
 	var c KaraokeCatalog
-	if json.Unmarshal(b, &c) == nil {
+	if json.Unmarshal(b, &c) == nil && c.Provider == "cantonese-karaoke-curated" && c.Language == "粵語" {
+		for _, song := range c.Songs {
+			if song.Language != "粵語" {
+				return
+			}
+		}
 		s.catalog = c
 	}
 }
@@ -188,7 +212,7 @@ func (s *KaraokeService) Crawl(trigger string) error {
 	now := time.Now().In(shanghaiLocation)
 	old := s.snapshot()
 	next := KaraokeCatalog{
-		Provider: "wikimedia-commons-curated", IntervalHours: 2,
+		Provider: "cantonese-karaoke-curated", Language: "粵語", IntervalHours: 2,
 		LastCrawl:   now.Format("2006-01-02 15:04:05"),
 		NextCrawl:   now.Add(s.interval).Format("2006-01-02 15:04:05"),
 		LastTrigger: trigger,
@@ -201,7 +225,7 @@ func (s *KaraokeService) Crawl(trigger string) error {
 
 	var errs []string
 	for _, seed := range karaokeSeeds {
-		song := KaraokeSong{ID: seed.ID, Title: seed.Title, Artist: seed.Artist, Version: seed.Version, Tracks: map[string]KaraokeTrack{}}
+		song := KaraokeSong{ID: seed.ID, Title: seed.Title, Artist: seed.Artist, Version: seed.Version, Language: seed.Language, Tracks: map[string]KaraokeTrack{}}
 		for _, st := range seed.Tracks {
 			track, err := s.syncTrack(seed.ID, st)
 			if err != nil {
@@ -236,6 +260,19 @@ func (s *KaraokeService) Crawl(trigger string) error {
 }
 
 func (s *KaraokeService) syncTrack(songID string, seed karaokeSeedTrack) (KaraokeTrack, error) {
+	if seed.Language != "粵語" {
+		return KaraokeTrack{}, errors.New("non-Cantonese resource rejected")
+	}
+	if seed.SourceType == "youtube" {
+		return s.syncYouTubeTrack(seed)
+	}
+	if seed.SourceType == "commons" {
+		return s.syncCommonsTrack(songID, seed)
+	}
+	return KaraokeTrack{}, fmt.Errorf("unsupported karaoke source type: %s", seed.SourceType)
+}
+
+func (s *KaraokeService) syncCommonsTrack(songID string, seed karaokeSeedTrack) (KaraokeTrack, error) {
 	info, err := s.commonsInfo(seed.FileTitle)
 	if err != nil {
 		return KaraokeTrack{}, err
@@ -265,11 +302,166 @@ func (s *KaraokeService) syncTrack(songID string, seed karaokeSeedTrack) (Karaok
 		page = "https://commons.wikimedia.org/wiki/" + url.PathEscape(seed.FileTitle)
 	}
 	return KaraokeTrack{
-		Mode: seed.Mode, Version: seed.Version, SourceFile: seed.FileTitle, SourcePage: page,
-		License: seed.License, LyricsLanguage: seed.Lang, Duration: info.Duration, Bytes: info.Size,
-		URL:    "/singeros/api/karaoke/assets/" + songID + "/" + seed.Mode,
+		Mode: seed.Mode, Version: seed.Version, SourceType: "commons", SourceFile: seed.FileTitle, SourcePage: page,
+		License: seed.License, Language: seed.Language, LyricsLanguage: seed.LyricsLanguage,
+		Duration: info.Duration, Bytes: info.Size, URL: "/singeros/api/karaoke/assets/" + songID + "/" + seed.Mode,
 		Lyrics: cues, SyncedAt: time.Now().In(shanghaiLocation).Format("2006-01-02 15:04:05"),
 	}, nil
+}
+
+func (s *KaraokeService) syncYouTubeTrack(seed karaokeSeedTrack) (KaraokeTrack, error) {
+	if seed.VideoID == "" || seed.LyricsURL == "" {
+		return KaraokeTrack{}, errors.New("youtube seed incomplete")
+	}
+
+	oembedURL := "https://www.youtube.com/oembed?" + url.Values{
+		"url":    {"https://www.youtube.com/watch?v=" + seed.VideoID},
+		"format": {"json"},
+	}.Encode()
+	body, err := s.getWithRetry(oembedURL)
+	if err != nil {
+		return KaraokeTrack{}, fmt.Errorf("youtube oembed: %w", err)
+	}
+	var meta struct {
+		Title      string `json:"title"`
+		AuthorName string `json:"author_name"`
+	}
+	if err := json.Unmarshal(body, &meta); err != nil {
+		return KaraokeTrack{}, fmt.Errorf("youtube metadata: %w", err)
+	}
+	if !containsWalkSing(meta.Title) {
+		return KaraokeTrack{}, fmt.Errorf("youtube title mismatch: %s", meta.Title)
+	}
+
+	duration, err := s.youtubeDuration(seed.SearchQuery, seed.VideoID)
+	if err != nil {
+		return KaraokeTrack{}, err
+	}
+	if math.Abs(duration-seed.ExpectedDuration) > 2 {
+		return KaraokeTrack{}, fmt.Errorf("version duration mismatch: got %.0fs expected %.0fs", duration, seed.ExpectedDuration)
+	}
+
+	cues, err := s.fetchLRC(seed.LyricsURL, duration)
+	if err != nil {
+		return KaraokeTrack{}, fmt.Errorf("timed lyrics: %w", err)
+	}
+	if len(cues) < 8 {
+		return KaraokeTrack{}, fmt.Errorf("timed lyrics too short: %d cues", len(cues))
+	}
+
+	return KaraokeTrack{
+		Mode: seed.Mode, Version: seed.Version, SourceType: "youtube", ExternalID: seed.VideoID,
+		SourcePage: "https://www.youtube.com/watch?v=" + seed.VideoID,
+		License:    seed.License, Language: seed.Language, LyricsLanguage: seed.LyricsLanguage,
+		Duration: duration, Bytes: 0, Lyrics: cues,
+		SyncedAt: time.Now().In(shanghaiLocation).Format("2006-01-02 15:04:05"),
+	}, nil
+}
+
+func containsWalkSing(v string) bool {
+	v = strings.ToLower(strings.TrimSpace(v))
+	return strings.Contains(v, "邊走邊唱") || strings.Contains(v, "边走边唱")
+}
+
+func (s *KaraokeService) youtubeDuration(query, videoID string) (float64, error) {
+	q := url.Values{"search_query": {query}, "hl": {"en"}}
+	body, err := s.getWithRetry("https://www.youtube.com/results?" + q.Encode())
+	if err != nil {
+		return 0, fmt.Errorf("youtube search: %w", err)
+	}
+	text := string(body)
+	needle := `"videoId":"` + videoID + `"`
+	idx := strings.Index(text, needle)
+	if idx < 0 {
+		return 0, errors.New("youtube video not present in validation search")
+	}
+	end := idx + 12000
+	if end > len(text) {
+		end = len(text)
+	}
+	chunk := text[idx:end]
+	re := regexp.MustCompile(`"lengthText":\{"accessibility":\{"accessibilityData":\{"label":"([^"]+)"`)
+	m := re.FindStringSubmatch(chunk)
+	if len(m) != 2 {
+		return 0, errors.New("youtube duration unavailable")
+	}
+	return parseEnglishDurationLabel(m[1])
+}
+
+func parseEnglishDurationLabel(v string) (float64, error) {
+	var total float64
+	re := regexp.MustCompile(`([0-9]+)\s+(hour|hours|minute|minutes|second|seconds)`)
+	for _, m := range re.FindAllStringSubmatch(strings.ToLower(v), -1) {
+		n, _ := strconv.Atoi(m[1])
+		switch m[2] {
+		case "hour", "hours":
+			total += float64(n * 3600)
+		case "minute", "minutes":
+			total += float64(n * 60)
+		case "second", "seconds":
+			total += float64(n)
+		}
+	}
+	if total <= 0 {
+		return 0, fmt.Errorf("bad duration label: %s", v)
+	}
+	return total, nil
+}
+
+func (s *KaraokeService) fetchLRC(target string, duration float64) ([]KaraokeCue, error) {
+	body, err := s.getWithRetry(target)
+	if err != nil {
+		return nil, err
+	}
+	text := string(body)
+	if !(strings.Contains(text, "[ar:黄耀明]") || strings.Contains(text, "[ar:黃耀明]")) {
+		return nil, errors.New("lyric artist mismatch")
+	}
+	if !containsWalkSing(text) {
+		return nil, errors.New("lyric title mismatch")
+	}
+
+	lineRE := regexp.MustCompile(`((?:\[[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?\])+)([^<\r\n]*)`)
+	timeRE := regexp.MustCompile(`\[([0-9]{2}):([0-9]{2}(?:\.[0-9]+)?)\]`)
+	var cues []KaraokeCue
+	for _, m := range lineRE.FindAllStringSubmatch(text, -1) {
+		lyric := strings.TrimSpace(m[2])
+		lyric = strings.NewReplacer(
+			"結觸", "接觸",
+			"其蹟", "奇蹟",
+			"放起", "放棄",
+			"必需", "必須",
+		).Replace(lyric)
+		if lyric == "隨著我這離開的腳步如踏進" {
+			lyric += "淒美的惜別舞"
+		}
+		if lyric == "" || strings.Contains(lyric, "词曲") || strings.Contains(lyric, "詞曲") || strings.Contains(lyric, "下歌词") {
+			continue
+		}
+		for _, tm := range timeRE.FindAllStringSubmatch(m[1], -1) {
+			min, _ := strconv.Atoi(tm[1])
+			sec, err := strconv.ParseFloat(tm[2], 64)
+			if err != nil {
+				continue
+			}
+			cues = append(cues, KaraokeCue{Start: float64(min*60) + sec, Text: lyric})
+		}
+	}
+	sort.Slice(cues, func(i, j int) bool { return cues[i].Start < cues[j].Start })
+	if len(cues) == 0 {
+		return nil, errors.New("no LRC cues parsed")
+	}
+	for i := range cues {
+		if i+1 < len(cues) {
+			cues[i].End = cues[i+1].Start
+		} else {
+			cues[i].End = duration
+		}
+		if cues[i].End <= cues[i].Start {
+			cues[i].End = cues[i].Start + 4
+		}
+	}
+	return cues, nil
 }
 
 func (s *KaraokeService) commonsInfo(title string) (commonsImageInfo, error) {
