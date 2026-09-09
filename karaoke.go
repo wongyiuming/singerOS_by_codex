@@ -1,15 +1,12 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -40,17 +37,16 @@ type KaraokeTrack struct {
 	Mode           string       `json:"mode"`
 	Version        string       `json:"version"`
 	SourceType     string       `json:"source_type"`
-	ExternalID     string       `json:"external_id,omitempty"`
-	SourceFile     string       `json:"source_file,omitempty"`
-	SourcePage     string       `json:"source_page"`
-	License        string       `json:"license"`
+	SourceFile     string       `json:"source_file"`
+	SourcePage     string       `json:"source_page,omitempty"`
+	License        string       `json:"license,omitempty"`
 	Language       string       `json:"language"`
 	LyricsLanguage string       `json:"lyrics_language"`
 	Duration       float64      `json:"duration_seconds"`
 	Bytes          int64        `json:"bytes"`
-	URL            string       `json:"url,omitempty"`
+	URL            string       `json:"url"`
 	Lyrics         []KaraokeCue `json:"lyrics"`
-	SyncedAt       string       `json:"synced_at_shanghai"`
+	SyncedAt       string       `json:"synced_at_shanghai,omitempty"`
 }
 
 type KaraokeSong struct {
@@ -63,74 +59,17 @@ type KaraokeSong struct {
 }
 
 type KaraokeCatalog struct {
-	Provider      string        `json:"provider"`
-	Language      string        `json:"language"`
-	LastCrawl     string        `json:"last_crawl_shanghai"`
-	NextCrawl     string        `json:"next_crawl_shanghai"`
-	IntervalHours int           `json:"interval_hours"`
-	LastTrigger   string        `json:"last_trigger"`
-	LastError     string        `json:"last_error,omitempty"`
-	Songs         []KaraokeSong `json:"songs"`
-}
-
-type karaokeSeedTrack struct {
-	Mode             string
-	Version          string
-	SourceType       string
-	VideoID          string
-	SearchQuery      string
-	LyricsURL        string
-	FileTitle        string
-	Lang             string
-	ExpectedDuration float64
-	Language         string
-	LyricsLanguage   string
-	License          string
-}
-
-type karaokeSeedSong struct {
-	ID, Title, Artist, Version, Language string
-	Tracks                               []karaokeSeedTrack
-}
-
-var karaokeSeeds = []karaokeSeedSong{
-	{
-		ID: "anthony-wong-walk-sing-1993", Title: "邊走邊唱", Artist: "黃耀明", Version: "《借借你的愛》1993 錄音室版", Language: "粵語",
-		Tracks: []karaokeSeedTrack{
-			{
-				Mode: "original", Version: "1993 錄音室版 · 原唱", SourceType: "youtube",
-				VideoID: "lPiSb7s3JPQ", SearchQuery: "邊走邊唱 黃耀明 伴奏",
-				LyricsURL: "https://www.5nd.com/gecilrc/75989.htm", ExpectedDuration: 341,
-				Language: "粵語", LyricsLanguage: "zh-Hant-HK", License: "YouTube 嵌入播放；商用正式版需接授权音源",
-			},
-			{
-				Mode: "accompaniment", Version: "1993 編曲對應 · 純音樂伴奏", SourceType: "youtube",
-				VideoID: "aiQ5OyTZVu0", SearchQuery: "邊走邊唱 黃耀明 伴奏",
-				LyricsURL: "https://www.5nd.com/gecilrc/75989.htm", ExpectedDuration: 341,
-				Language: "粵語", LyricsLanguage: "zh-Hant-HK", License: "YouTube 嵌入播放；商用正式版需接授权KTV音源",
-			},
-		},
-	},
-}
-
-type commonsImageInfo struct {
-	URL            string         `json:"url"`
-	DescriptionURL string         `json:"descriptionurl"`
-	Size           int64          `json:"size"`
-	Width          int            `json:"width"`
-	Height         int            `json:"height"`
-	Duration       float64        `json:"duration"`
-	ExtMetadata    map[string]any `json:"extmetadata"`
+	Provider  string        `json:"provider"`
+	Language  string        `json:"language"`
+	UpdatedAt string        `json:"updated_at_shanghai,omitempty"`
+	Songs     []KaraokeSong `json:"songs"`
 }
 
 type KaraokeService struct {
-	mu       sync.RWMutex
-	crawlMu  sync.Mutex
-	root     string
-	assets   string
-	catalog  KaraokeCatalog
-	client   *http.Client
-	interval time.Duration
+	mu      sync.RWMutex
+	root    string
+	assets  string
+	catalog KaraokeCatalog
 }
 
 func newKaraokeService(dataDir string) *KaraokeService {
@@ -138,13 +77,15 @@ func newKaraokeService(dataDir string) *KaraokeService {
 	assets := filepath.Join(root, "assets")
 	_ = os.MkdirAll(assets, 0o755)
 	s := &KaraokeService{
-		root: root, assets: assets,
-		client:   &http.Client{Timeout: 45 * time.Second},
-		interval: 2 * time.Hour,
-		catalog:  KaraokeCatalog{Provider: "cantonese-karaoke-curated", Language: "粵語", IntervalHours: 2, Songs: []KaraokeSong{}},
+		root:   root,
+		assets: assets,
+		catalog: KaraokeCatalog{
+			Provider: "manual-curated-local",
+			Language: "粵語",
+			Songs:    []KaraokeSong{},
+		},
 	}
 	s.load()
-	go s.scheduler()
 	return s
 }
 
@@ -154,28 +95,41 @@ func (s *KaraokeService) load() {
 		return
 	}
 	var c KaraokeCatalog
-	if json.Unmarshal(b, &c) == nil && c.Provider == "cantonese-karaoke-curated" && c.Language == "粵語" {
-		for _, song := range c.Songs {
-			if song.Language != "粵語" {
-				return
-			}
-		}
-		s.catalog = c
+	if json.Unmarshal(b, &c) != nil || c.Provider != "manual-curated-local" || c.Language != "粵語" {
+		return
 	}
+	valid := make([]KaraokeSong, 0, len(c.Songs))
+	for _, song := range c.Songs {
+		if s.validLocalSong(song) {
+			valid = append(valid, song)
+		}
+	}
+	c.Songs = valid
+	s.mu.Lock()
+	s.catalog = c
+	s.mu.Unlock()
 }
 
-func (s *KaraokeService) scheduler() {
-	time.Sleep(2 * time.Second)
-	if err := s.Crawl("startup"); err != nil {
-		log.Printf("karaoke crawl startup: %v", err)
+func (s *KaraokeService) validLocalSong(song KaraokeSong) bool {
+	if song.ID == "" || song.Title == "" || song.Artist == "" || song.Language != "粵語" {
+		return false
 	}
-	t := time.NewTicker(s.interval)
-	defer t.Stop()
-	for range t.C {
-		if err := s.Crawl("scheduled"); err != nil {
-			log.Printf("karaoke crawl scheduled: %v", err)
+	for _, mode := range []string{"original", "accompaniment"} {
+		track, ok := song.Tracks[mode]
+		if !ok || track.Mode != mode || track.SourceType != "local" || track.Language != "粵語" || len(track.Lyrics) == 0 || track.SourceFile == "" {
+			return false
+		}
+		ext := strings.ToLower(filepath.Ext(track.SourceFile))
+		if ext == "" || len(ext) > 8 {
+			return false
+		}
+		p := filepath.Join(s.assets, song.ID, mode+ext)
+		st, err := os.Stat(p)
+		if err != nil || st.IsDir() || st.Size() <= 0 {
+			return false
 		}
 	}
+	return true
 }
 
 func (s *KaraokeService) snapshot() KaraokeCatalog {
@@ -185,443 +139,6 @@ func (s *KaraokeService) snapshot() KaraokeCatalog {
 	var out KaraokeCatalog
 	_ = json.Unmarshal(b, &out)
 	return out
-}
-
-func (s *KaraokeService) save(c KaraokeCatalog) error {
-	b, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := filepath.Join(s.root, "catalog.json.tmp")
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, filepath.Join(s.root, "catalog.json")); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	s.catalog = c
-	s.mu.Unlock()
-	return nil
-}
-
-func (s *KaraokeService) Crawl(trigger string) error {
-	s.crawlMu.Lock()
-	defer s.crawlMu.Unlock()
-
-	now := time.Now().In(shanghaiLocation)
-	old := s.snapshot()
-	next := KaraokeCatalog{
-		Provider: "cantonese-karaoke-curated", Language: "粵語", IntervalHours: 2,
-		LastCrawl:   now.Format("2006-01-02 15:04:05"),
-		NextCrawl:   now.Add(s.interval).Format("2006-01-02 15:04:05"),
-		LastTrigger: trigger,
-		Songs:       []KaraokeSong{},
-	}
-	oldByID := map[string]KaraokeSong{}
-	for _, song := range old.Songs {
-		oldByID[song.ID] = song
-	}
-
-	var errs []string
-	for _, seed := range karaokeSeeds {
-		song := KaraokeSong{ID: seed.ID, Title: seed.Title, Artist: seed.Artist, Version: seed.Version, Language: seed.Language, Tracks: map[string]KaraokeTrack{}}
-		for _, st := range seed.Tracks {
-			track, err := s.syncTrack(seed.ID, st)
-			if err != nil {
-				errs = append(errs, seed.ID+"/"+st.Mode+": "+err.Error())
-				if prev, ok := oldByID[seed.ID].Tracks[st.Mode]; ok {
-					song.Tracks[st.Mode] = prev
-				}
-				continue
-			}
-			song.Tracks[st.Mode] = track
-			time.Sleep(350 * time.Millisecond)
-		}
-		if len(song.Tracks) == 2 && len(song.Tracks["original"].Lyrics) > 0 && len(song.Tracks["accompaniment"].Lyrics) > 0 {
-			next.Songs = append(next.Songs, song)
-		} else if prev, ok := oldByID[seed.ID]; ok {
-			next.Songs = append(next.Songs, prev)
-		}
-	}
-	if len(errs) > 0 {
-		next.LastError = strings.Join(errs, " | ")
-	}
-	if err := s.save(next); err != nil {
-		return err
-	}
-	if len(next.Songs) == 0 {
-		return errors.New("no karaoke song passed version/audio/lyrics validation")
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("partial crawl: %s", next.LastError)
-	}
-	return nil
-}
-
-func (s *KaraokeService) syncTrack(songID string, seed karaokeSeedTrack) (KaraokeTrack, error) {
-	if seed.Language != "粵語" {
-		return KaraokeTrack{}, errors.New("non-Cantonese resource rejected")
-	}
-	if seed.SourceType == "youtube" {
-		return s.syncYouTubeTrack(seed)
-	}
-	if seed.SourceType == "commons" {
-		return s.syncCommonsTrack(songID, seed)
-	}
-	return KaraokeTrack{}, fmt.Errorf("unsupported karaoke source type: %s", seed.SourceType)
-}
-
-func (s *KaraokeService) syncCommonsTrack(songID string, seed karaokeSeedTrack) (KaraokeTrack, error) {
-	info, err := s.commonsInfo(seed.FileTitle)
-	if err != nil {
-		return KaraokeTrack{}, err
-	}
-	vtt, err := s.commonsTimedText(seed.FileTitle, seed.Lang)
-	if err != nil {
-		return KaraokeTrack{}, fmt.Errorf("timed text: %w", err)
-	}
-	cues, err := parseVTT(vtt)
-	if err != nil || len(cues) == 0 {
-		return KaraokeTrack{}, errors.New("timed text empty or invalid")
-	}
-	dir := filepath.Join(s.assets, songID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return KaraokeTrack{}, err
-	}
-	ext := strings.ToLower(filepath.Ext(strings.TrimPrefix(seed.FileTitle, "File:")))
-	if ext == "" || len(ext) > 8 {
-		ext = ".ogg"
-	}
-	local := filepath.Join(dir, seed.Mode+ext)
-	if err := s.downloadIfNeeded(info.URL, local, info.Size); err != nil {
-		return KaraokeTrack{}, err
-	}
-	page := info.DescriptionURL
-	if page == "" {
-		page = "https://commons.wikimedia.org/wiki/" + url.PathEscape(seed.FileTitle)
-	}
-	return KaraokeTrack{
-		Mode: seed.Mode, Version: seed.Version, SourceType: "commons", SourceFile: seed.FileTitle, SourcePage: page,
-		License: seed.License, Language: seed.Language, LyricsLanguage: seed.LyricsLanguage,
-		Duration: info.Duration, Bytes: info.Size, URL: "/singeros/api/karaoke/assets/" + songID + "/" + seed.Mode,
-		Lyrics: cues, SyncedAt: time.Now().In(shanghaiLocation).Format("2006-01-02 15:04:05"),
-	}, nil
-}
-
-func (s *KaraokeService) syncYouTubeTrack(seed karaokeSeedTrack) (KaraokeTrack, error) {
-	if seed.VideoID == "" || seed.LyricsURL == "" {
-		return KaraokeTrack{}, errors.New("youtube seed incomplete")
-	}
-
-	oembedURL := "https://www.youtube.com/oembed?" + url.Values{
-		"url":    {"https://www.youtube.com/watch?v=" + seed.VideoID},
-		"format": {"json"},
-	}.Encode()
-	body, err := s.getWithRetry(oembedURL)
-	if err != nil {
-		return KaraokeTrack{}, fmt.Errorf("youtube oembed: %w", err)
-	}
-	var meta struct {
-		Title      string `json:"title"`
-		AuthorName string `json:"author_name"`
-	}
-	if err := json.Unmarshal(body, &meta); err != nil {
-		return KaraokeTrack{}, fmt.Errorf("youtube metadata: %w", err)
-	}
-	if !containsWalkSing(meta.Title) {
-		return KaraokeTrack{}, fmt.Errorf("youtube title mismatch: %s", meta.Title)
-	}
-
-	duration, err := s.youtubeDuration(seed.SearchQuery, seed.VideoID)
-	if err != nil {
-		return KaraokeTrack{}, err
-	}
-	if math.Abs(duration-seed.ExpectedDuration) > 2 {
-		return KaraokeTrack{}, fmt.Errorf("version duration mismatch: got %.0fs expected %.0fs", duration, seed.ExpectedDuration)
-	}
-
-	cues, err := s.fetchLRC(seed.LyricsURL, duration)
-	if err != nil {
-		return KaraokeTrack{}, fmt.Errorf("timed lyrics: %w", err)
-	}
-	if len(cues) < 8 {
-		return KaraokeTrack{}, fmt.Errorf("timed lyrics too short: %d cues", len(cues))
-	}
-
-	return KaraokeTrack{
-		Mode: seed.Mode, Version: seed.Version, SourceType: "youtube", ExternalID: seed.VideoID,
-		SourcePage: "https://www.youtube.com/watch?v=" + seed.VideoID,
-		License:    seed.License, Language: seed.Language, LyricsLanguage: seed.LyricsLanguage,
-		Duration: duration, Bytes: 0, Lyrics: cues,
-		SyncedAt: time.Now().In(shanghaiLocation).Format("2006-01-02 15:04:05"),
-	}, nil
-}
-
-func containsWalkSing(v string) bool {
-	v = strings.ToLower(strings.TrimSpace(v))
-	return strings.Contains(v, "邊走邊唱") || strings.Contains(v, "边走边唱")
-}
-
-func (s *KaraokeService) youtubeDuration(query, videoID string) (float64, error) {
-	q := url.Values{"search_query": {query}, "hl": {"en"}}
-	body, err := s.getWithRetry("https://www.youtube.com/results?" + q.Encode())
-	if err != nil {
-		return 0, fmt.Errorf("youtube search: %w", err)
-	}
-	text := string(body)
-	needle := `"videoId":"` + videoID + `"`
-	idx := strings.Index(text, needle)
-	if idx < 0 {
-		return 0, errors.New("youtube video not present in validation search")
-	}
-	end := idx + 12000
-	if end > len(text) {
-		end = len(text)
-	}
-	chunk := text[idx:end]
-	re := regexp.MustCompile(`"lengthText":\{"accessibility":\{"accessibilityData":\{"label":"([^"]+)"`)
-	m := re.FindStringSubmatch(chunk)
-	if len(m) != 2 {
-		return 0, errors.New("youtube duration unavailable")
-	}
-	return parseEnglishDurationLabel(m[1])
-}
-
-func parseEnglishDurationLabel(v string) (float64, error) {
-	var total float64
-	re := regexp.MustCompile(`([0-9]+)\s+(hour|hours|minute|minutes|second|seconds)`)
-	for _, m := range re.FindAllStringSubmatch(strings.ToLower(v), -1) {
-		n, _ := strconv.Atoi(m[1])
-		switch m[2] {
-		case "hour", "hours":
-			total += float64(n * 3600)
-		case "minute", "minutes":
-			total += float64(n * 60)
-		case "second", "seconds":
-			total += float64(n)
-		}
-	}
-	if total <= 0 {
-		return 0, fmt.Errorf("bad duration label: %s", v)
-	}
-	return total, nil
-}
-
-func (s *KaraokeService) fetchLRC(target string, duration float64) ([]KaraokeCue, error) {
-	body, err := s.getWithRetry(target)
-	if err != nil {
-		return nil, err
-	}
-	text := string(body)
-	if !(strings.Contains(text, "[ar:黄耀明]") || strings.Contains(text, "[ar:黃耀明]")) {
-		return nil, errors.New("lyric artist mismatch")
-	}
-	if !containsWalkSing(text) {
-		return nil, errors.New("lyric title mismatch")
-	}
-
-	lineRE := regexp.MustCompile(`((?:\[[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?\])+)([^<\r\n]*)`)
-	timeRE := regexp.MustCompile(`\[([0-9]{2}):([0-9]{2}(?:\.[0-9]+)?)\]`)
-	var cues []KaraokeCue
-	for _, m := range lineRE.FindAllStringSubmatch(text, -1) {
-		lyric := strings.TrimSpace(m[2])
-		lyric = strings.NewReplacer(
-			"結觸", "接觸",
-			"其蹟", "奇蹟",
-			"放起", "放棄",
-			"必需", "必須",
-		).Replace(lyric)
-		if lyric == "隨著我這離開的腳步如踏進" {
-			lyric += "淒美的惜別舞"
-		}
-		if lyric == "" || strings.Contains(lyric, "词曲") || strings.Contains(lyric, "詞曲") || strings.Contains(lyric, "下歌词") {
-			continue
-		}
-		for _, tm := range timeRE.FindAllStringSubmatch(m[1], -1) {
-			min, _ := strconv.Atoi(tm[1])
-			sec, err := strconv.ParseFloat(tm[2], 64)
-			if err != nil {
-				continue
-			}
-			cues = append(cues, KaraokeCue{Start: float64(min*60) + sec, Text: lyric})
-		}
-	}
-	sort.Slice(cues, func(i, j int) bool { return cues[i].Start < cues[j].Start })
-	if len(cues) == 0 {
-		return nil, errors.New("no LRC cues parsed")
-	}
-	for i := range cues {
-		if i+1 < len(cues) {
-			cues[i].End = cues[i+1].Start
-		} else {
-			cues[i].End = duration
-		}
-		if cues[i].End <= cues[i].Start {
-			cues[i].End = cues[i].Start + 4
-		}
-	}
-	return cues, nil
-}
-
-func (s *KaraokeService) commonsInfo(title string) (commonsImageInfo, error) {
-	q := url.Values{
-		"action": {"query"}, "format": {"json"}, "prop": {"imageinfo"},
-		"iiprop": {"url|size|mime|extmetadata"}, "titles": {title},
-	}
-	body, err := s.getWithRetry("https://commons.wikimedia.org/w/api.php?" + q.Encode())
-	if err != nil {
-		return commonsImageInfo{}, err
-	}
-	var payload struct {
-		Query struct {
-			Pages map[string]struct {
-				ImageInfo []commonsImageInfo `json:"imageinfo"`
-			} `json:"pages"`
-		} `json:"query"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return commonsImageInfo{}, err
-	}
-	for _, p := range payload.Query.Pages {
-		if len(p.ImageInfo) > 0 && p.ImageInfo[0].URL != "" {
-			return p.ImageInfo[0], nil
-		}
-	}
-	return commonsImageInfo{}, errors.New("commons media not found")
-}
-
-func (s *KaraokeService) commonsTimedText(title, lang string) ([]byte, error) {
-	q := url.Values{
-		"action": {"timedtext"}, "title": {title}, "lang": {lang}, "trackformat": {"vtt"},
-	}
-	return s.getWithRetry("https://commons.wikimedia.org/w/api.php?" + q.Encode())
-}
-
-func (s *KaraokeService) getWithRetry(target string) ([]byte, error) {
-	var last error
-	for i := 0; i < 4; i++ {
-		req, _ := http.NewRequest(http.MethodGet, target, nil)
-		req.Header.Set("User-Agent", "singerOS/0.2 (https://github.com/wongyiuming/singerOS_by_codex)")
-		resp, err := s.client.Do(req)
-		if err == nil {
-			defer resp.Body.Close()
-			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				return io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-			}
-			last = fmt.Errorf("HTTP %d", resp.StatusCode)
-			if resp.StatusCode != 429 && resp.StatusCode != 503 {
-				return nil, last
-			}
-		} else {
-			last = err
-		}
-		time.Sleep(time.Duration(i+1) * time.Second)
-	}
-	return nil, last
-}
-
-func (s *KaraokeService) downloadIfNeeded(remote, local string, expected int64) error {
-	if st, err := os.Stat(local); err == nil && st.Size() > 0 && (expected <= 0 || st.Size() == expected) {
-		return nil
-	}
-	req, _ := http.NewRequest(http.MethodGet, remote, nil)
-	req.Header.Set("User-Agent", "singerOS/0.2")
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("audio download HTTP %d", resp.StatusCode)
-	}
-	tmp := local + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	n, copyErr := io.Copy(f, io.LimitReader(resp.Body, 128<<20))
-	closeErr := f.Close()
-	if copyErr != nil {
-		_ = os.Remove(tmp)
-		return copyErr
-	}
-	if closeErr != nil {
-		_ = os.Remove(tmp)
-		return closeErr
-	}
-	if expected > 0 && n != expected {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("audio size mismatch: got %d expected %d", n, expected)
-	}
-	return os.Rename(tmp, local)
-}
-
-func parseVTT(data []byte) ([]KaraokeCue, error) {
-	sc := bufio.NewScanner(strings.NewReader(string(data)))
-	var cues []KaraokeCue
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || line == "WEBVTT" || strings.HasPrefix(line, "NOTE") {
-			continue
-		}
-		if !strings.Contains(line, "-->") {
-			if _, err := strconv.Atoi(line); err == nil && sc.Scan() {
-				line = strings.TrimSpace(sc.Text())
-			} else {
-				continue
-			}
-		}
-		if !strings.Contains(line, "-->") {
-			continue
-		}
-		parts := strings.SplitN(line, "-->", 2)
-		start, err1 := parseCueTime(strings.TrimSpace(parts[0]))
-		endField := strings.Fields(strings.TrimSpace(parts[1]))
-		if len(endField) == 0 {
-			continue
-		}
-		end, err2 := parseCueTime(endField[0])
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		var textLines []string
-		for sc.Scan() {
-			t := strings.TrimSpace(sc.Text())
-			if t == "" {
-				break
-			}
-			textLines = append(textLines, t)
-		}
-		text := strings.TrimSpace(strings.Join(textLines, " "))
-		if text != "" {
-			cues = append(cues, KaraokeCue{Start: start, End: end, Text: text})
-		}
-	}
-	return cues, sc.Err()
-}
-
-func parseCueTime(v string) (float64, error) {
-	v = strings.ReplaceAll(v, ",", ".")
-	p := strings.Split(v, ":")
-	if len(p) == 2 {
-		m, e1 := strconv.ParseFloat(p[0], 64)
-		s, e2 := strconv.ParseFloat(p[1], 64)
-		if e1 != nil || e2 != nil {
-			return 0, errors.New("bad cue time")
-		}
-		return m*60 + s, nil
-	}
-	if len(p) == 3 {
-		h, e1 := strconv.ParseFloat(p[0], 64)
-		m, e2 := strconv.ParseFloat(p[1], 64)
-		s, e3 := strconv.ParseFloat(p[2], 64)
-		if e1 != nil || e2 != nil || e3 != nil {
-			return 0, errors.New("bad cue time")
-		}
-		return h*3600 + m*60 + s, nil
-	}
-	return 0, errors.New("bad cue time")
 }
 
 func (s *KaraokeService) asset(songID, mode string) (string, bool) {
@@ -835,15 +352,7 @@ func registerKaraokeRoutes(r *gin.Engine, dataDir string, secureHeaders func(*gi
 
 	api := r.Group("/singeros/api/karaoke")
 	api.GET("/catalog", func(c *gin.Context) { c.JSON(http.StatusOK, service.snapshot()) })
-	api.POST("/crawl", func(c *gin.Context) {
-		err := service.Crawl("manual")
-		status := service.snapshot()
-		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"ok": false, "error": err.Error(), "catalog": status})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"ok": true, "catalog": status})
-	})
+
 	api.GET("/assets/:song/:mode", func(c *gin.Context) {
 		p, ok := service.asset(c.Param("song"), c.Param("mode"))
 		if !ok {

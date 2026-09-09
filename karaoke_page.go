@@ -18,7 +18,7 @@ h1,h2,h3,p{margin:0}.brand p,.muted{color:var(--muted)}a{color:#c4baff;text-deco
 .song-list{display:flex;flex-direction:column;gap:8px}.song{padding:13px;border:1px solid var(--line);border-radius:14px;background:#0d1118;cursor:pointer}.song.active{border-color:#8069ff;background:#17142b}.song strong{display:block}.song small{display:block;color:var(--muted);margin-top:4px}
 .main{display:grid;grid-template-rows:auto auto 1fr;gap:16px}.hero{padding:22px}.hero-top{display:flex;justify-content:space-between;gap:15px;align-items:flex-start}.hero h2{font-size:30px;margin-top:4px}.mode{display:flex;gap:8px}.mode .btn.active{background:#6e52ef;border-color:#9b8aff}
 .meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.chip{border:1px solid var(--line);border-radius:999px;padding:6px 9px;font-size:12px;color:#bec6d5}
-audio{width:100%;margin-top:18px}.video-wrap{width:100%;aspect-ratio:16/9;margin-top:18px;border-radius:14px;overflow:hidden;background:#05070b;display:none}.video-wrap iframe{width:100%;height:100%;border:0}.transport{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}.transport .btn{min-height:50px}
+audio{width:100%;margin-top:18px}.transport{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}.transport .btn{min-height:50px}
 .settings{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:15px}.setting{border:1px solid var(--line);background:#0c1016;border-radius:14px;padding:12px}
 .setting label{display:block;color:var(--muted);font-size:12px;margin-bottom:7px}select{width:100%;min-height:42px;border:1px solid #3a4455;border-radius:10px;background:#111722;color:white;padding:0 10px}
 .monitor-row{display:flex;align-items:center;gap:10px}.monitor-row input[type=range]{width:100%}
@@ -40,9 +40,9 @@ audio{width:100%;margin-top:18px}.video-wrap{width:100%;aspect-ratio:16/9;margin
 </header>
 <div class="layout">
   <aside class="panel pad">
-    <div class="panel-head"><div><h3>歌曲目录</h3><p class="muted">版本绑定音轨与歌词</p></div><button id="crawl" class="btn">立即抓取</button></div>
+    <div class="panel-head"><div><h3>歌曲目录</h3><p class="muted">粤语 · RN 本地定向资源</p></div></div>
     <div id="songs" class="song-list"></div>
-    <div id="crawlStatus" class="status">目录载入中</div>
+    <div id="resourceStatus" class="status">目录载入中</div>
   </aside>
   <section class="main">
     <div class="panel hero">
@@ -50,7 +50,6 @@ audio{width:100%;margin-top:18px}.video-wrap{width:100%;aspect-ratio:16/9;margin
         <div><div class="muted">当前点唱</div><h2 id="title">未选择</h2><div id="artist" class="muted"></div><div id="meta" class="meta"></div></div>
         <div class="mode"><button id="original" class="btn">原唱</button><button id="accompaniment" class="btn">伴奏</button></div>
       </div>
-      <div id="youtubeWrap" class="video-wrap"><div id="youtubePlayer"></div></div>
       <audio id="track" controls preload="metadata"></audio>
       <div class="transport">
         <button id="start" class="btn primary">开始K歌</button>
@@ -84,73 +83,24 @@ var mic=null,recorder=null,recSession=null,seq=0,queue=Promise.resolve(),started
 var AudioCtx=window.AudioContext||window.webkitAudioContext;
 var meterCtx=null,meterSource=null,analyser=null,meterRAF=0;
 var monitorCtx=null,monitorSource=null,monitorGain=null,monitorLimiter=null,monitoring=false;
-var ytPlayer=null,ytPlayerReady=null,lyricsTimer=0;
 var $=function(id){return document.getElementById(id)};
 function clientLog(event,details){fetch('/singeros/api/client-log',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({event:event,details:details,clientTime:new Date().toISOString(),href:location.href,userAgent:navigator.userAgent}),keepalive:true}).catch(function(){})}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function fmt(sec){sec=Math.max(0,Math.round(Number(sec)||0));return Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0')}
 function trackOf(){return song&&song.tracks? song.tracks[mode]:null}
-var ytAPIReady=new Promise(function(resolve){
-  if(window.YT&&window.YT.Player){resolve();return}
-  window.onYouTubeIframeAPIReady=function(){resolve()};
-  var sc=document.createElement('script');sc.src='https://www.youtube.com/iframe_api';sc.async=true;document.head.appendChild(sc);
-});
-function isYouTube(t){return !!(t&&t.source_type==='youtube'&&t.external_id)}
-async function ensureYouTube(t){
-  if(!isYouTube(t))return;
-  await ytAPIReady;
-  if(!ytPlayer){
-    ytPlayerReady=new Promise(function(resolve){
-      ytPlayer=new YT.Player('youtubePlayer',{videoId:t.external_id,playerVars:{controls:1,rel:0,playsinline:1,origin:location.origin},events:{
-        onReady:function(){resolve();},
-        onStateChange:function(e){if(e.data===YT.PlayerState.ENDED&&recording)stopKaraoke();},
-        onError:function(e){clientLog('K歌YouTube播放器错误',{code:e.data,videoId:trackOf()&&trackOf().external_id})}
-      }});
-    });
-    await ytPlayerReady;
-  }else{
-    if(ytPlayerReady)await ytPlayerReady;
-    ytPlayer.cueVideoById(t.external_id);
-  }
-  var actual=Number(ytPlayer.getDuration&&ytPlayer.getDuration())||0;
-  if(actual&&t.duration_seconds&&Math.abs(actual-Number(t.duration_seconds))>2){clientLog('K歌媒体时长不匹配',{expected:t.duration_seconds,actual:actual,videoId:t.external_id})}
-}
-function mediaTime(){
-  var t=trackOf();
-  if(isYouTube(t)&&ytPlayer&&ytPlayer.getCurrentTime){return Number(ytPlayer.getCurrentTime())||0}
-  return $('track').currentTime||0;
-}
-async function playMedia(restart){
-  var t=trackOf();if(!t)return;
-  if(isYouTube(t)){
-    await ensureYouTube(t);if(restart&&ytPlayer.seekTo)ytPlayer.seekTo(0,true);ytPlayer.playVideo();return;
-  }
-  if(restart)$('track').currentTime=0;await $('track').play();
-}
-function pauseMedia(){
-  var t=trackOf();
-  if(isYouTube(t)&&ytPlayer&&ytPlayer.pauseVideo){ytPlayer.pauseVideo();return}
-  $('track').pause();
-}
-function loadMedia(t){
-  if(isYouTube(t)){
-    $('track').style.display='none';$('youtubeWrap').style.display='block';ensureYouTube(t).catch(function(e){clientLog('K歌YouTube载入失败',{message:e.message,videoId:t.external_id})});
-  }else{
-    $('youtubeWrap').style.display='none';$('track').style.display='block';$('track').src=t.url||'';$('track').load();
-  }
-}
 async function loadCatalog(){
   var r=await fetch('/singeros/api/karaoke/catalog',{cache:'no-store'});catalog=await r.json();
-  renderSongs();renderCrawlStatus();
+  renderSongs();renderResourceStatus();
   if(!song&&catalog.songs&&catalog.songs.length) selectSong(catalog.songs[0].id);
 }
-function renderCrawlStatus(){
-  var el=$('crawlStatus');if(!catalog){el.textContent='目录不可用';return}
-  el.innerHTML='来源：'+esc(catalog.provider)+'<br>语言：'+esc(catalog.language||'粵語')+'<br>最近抓取：'+esc(catalog.last_crawl_shanghai||'尚未完成')+'<br>下次：'+esc(catalog.next_crawl_shanghai||'-')+(catalog.last_error?'<br><span class="bad">'+esc(catalog.last_error)+'</span>':'');
+function renderResourceStatus(){
+  var el=$('resourceStatus');if(!catalog){el.textContent='目录不可用';return}
+  el.innerHTML='模式：RN 本地资源<br>语言：'+esc(catalog.language||'粵語')+'<br>曲目：'+((catalog.songs||[]).length)+' 首'+(catalog.updated_at_shanghai?'<br>更新：'+esc(catalog.updated_at_shanghai):'');
 }
+
 function renderSongs(){
   var items=(catalog&&catalog.songs)||[];
-  $('songs').innerHTML=items.map(function(x){return '<div class="song '+(song&&song.id===x.id?'active':'')+'" data-id="'+esc(x.id)+'"><strong>'+esc(x.title)+'</strong><small>'+esc(x.artist)+' · '+esc(x.version)+'</small></div>'}).join('')||'<div class="muted">等待首次抓取</div>';
+  $('songs').innerHTML=items.map(function(x){return '<div class="song '+(song&&song.id===x.id?'active':'')+'" data-id="'+esc(x.id)+'"><strong>'+esc(x.title)+'</strong><small>'+esc(x.artist)+' · '+esc(x.version)+'</small></div>'}).join('')||'<div class="muted">等待定向录入粤语曲目</div>';
   Array.prototype.forEach.call(document.querySelectorAll('.song'),function(el){el.onclick=function(){if(!recording)selectSong(el.dataset.id)}})
 }
 function selectSong(id){
@@ -160,8 +110,8 @@ function selectSong(id){
 function applyTrack(){
   var t=trackOf();if(!t)return;
   $('title').textContent=song.title;$('artist').textContent=song.artist+' · '+t.version;
-  $('meta').innerHTML='<span class="chip">'+esc(mode==='original'?'原唱':'伴奏')+'</span><span class="chip">'+esc(t.language||song.language||'粤语')+'</span><span class="chip">歌词 '+esc(t.lyrics_language)+'</span><span class="chip">'+esc(t.version)+'</span>';
-  loadMedia(t);cues=t.lyrics||[];activeCue=-1;renderOverview();updateLyrics();
+  $('meta').innerHTML='<span class="chip">'+esc(mode==='original'?'原唱':'伴奏')+'</span><span class="chip">歌词 '+esc(t.lyrics_language)+'</span><span class="chip">'+esc(t.license)+'</span>';
+  $('track').src=t.url;$('track').load();cues=t.lyrics||[];activeCue=-1;renderOverview();updateLyrics();
   $('original').className='btn '+(mode==='original'?'active':'');$('accompaniment').className='btn '+(mode==='accompaniment'?'active':'');
   clientLog('K歌切换音轨',{song:song.id,mode:mode,version:t.version,lyricsLanguage:t.lyrics_language});
 }
@@ -174,7 +124,7 @@ function cueIndexAt(t){
   return -1;
 }
 function updateLyrics(){
-  var t=mediaTime(),idx=cueIndexAt(t);
+  var t=$('track').currentTime||0,idx=cueIndexAt(t);
   if(idx!==activeCue){
     activeCue=idx;
     $('current').textContent=idx>=0?cues[idx].text:'♪';
@@ -233,12 +183,12 @@ async function startKaraoke(){
     recorder.ondataavailable=function(e){if(!e.data||!e.data.size)return;var n=seq++;queue=queue.then(function(){return upload(e.data,n)}).catch(function(err){clientLog('K歌分片上传失败',{message:String(err),seq:n})})};
     recorder.onerror=function(e){clientLog('K歌MediaRecorder错误',{message:e.error&&e.error.message})};
     recorder.start(5000);recording=true;startedPerf=performance.now();$('start').disabled=true;$('stop').disabled=false;$('monitor').disabled=false;$('original').disabled=true;$('accompaniment').disabled=true;$('captureStatus').innerHTML='<span class="ok">录制中 · '+esc(mode==='original'?'原唱':'伴奏')+'</span>';
-    await playMedia(true);clientLog('K歌开始',{song:song.title,mode:mode,mime:mime,sourceType:trackOf()&&trackOf().source_type,externalId:trackOf()&&trackOf().external_id});
+    $('track').currentTime=0;await $('track').play();clientLog('K歌开始',{song:song.title,mode:mode,mime:mime});
   }catch(e){$('captureStatus').innerHTML='<span class="bad">'+esc((e.name||'Error')+': '+(e.message||e))+'</span>';clientLog('K歌启动失败',{name:e.name,message:e.message,stack:e.stack})}
 }
 async function stopKaraoke(){
   if(!recording)return;
-  recording=false;var played=mediaTime();pauseMedia();
+  recording=false;var played=$('track').currentTime||0;$('track').pause();
   try{
     if(monitoring)await stopMonitor();
     if(recorder&&recorder.state!=='inactive')await new Promise(function(resolve){recorder.addEventListener('stop',resolve,{once:true});recorder.stop()});
@@ -259,15 +209,13 @@ async function loadRecordings(){
 $('original').onclick=function(){if(!recording&&song&&song.tracks.original){mode='original';applyTrack()}};
 $('accompaniment').onclick=function(){if(!recording&&song&&song.tracks.accompaniment){mode='accompaniment';applyTrack()}};
 $('track').ontimeupdate=updateLyrics;$('track').onseeked=updateLyrics;$('track').onended=function(){if(recording)stopKaraoke()};
-lyricsTimer=setInterval(updateLyrics,100);
-$('start').onclick=startKaraoke;$('stop').onclick=stopKaraoke;$('play').onclick=function(){if(song)playMedia(false).catch(function(e){clientLog('K歌播放失败',{message:e.message})})};
+$('start').onclick=startKaraoke;$('stop').onclick=stopKaraoke;$('play').onclick=function(){if(song)$('track').play().catch(function(e){clientLog('K歌播放失败',{message:e.message})})};
 $('devices').onclick=listDevices;$('refreshRec').onclick=loadRecordings;
 $('monitor').onclick=function(){if(!mic)return;if(monitoring)stopMonitor();else startMonitor().catch(function(e){clientLog('K歌返听失败',{message:e.message})})};
 $('gain').oninput=function(){$('gainText').textContent=$('gain').value+'%';if(monitorGain)monitorGain.gain.value=Number($('gain').value)/100};
-$('crawl').onclick=async function(){var b=$('crawl');b.disabled=true;$('crawlStatus').textContent='正在抓取并校验音轨/歌词版本…';try{var r=await fetch('/singeros/api/karaoke/crawl',{method:'POST'}),j=await r.json();catalog=j.catalog||catalog;renderSongs();renderCrawlStatus();if(!r.ok)throw new Error(j.error||'crawl failed');clientLog('K歌手动抓取完成',{songs:catalog.songs.length})}catch(e){$('crawlStatus').innerHTML='<span class="bad">'+esc(e.message||e)+'</span>'}finally{b.disabled=false}};
 window.addEventListener('error',function(e){clientLog('K歌window.error',{message:e.message,filename:e.filename,line:e.lineno,column:e.colno})});
 window.addEventListener('unhandledrejection',function(e){clientLog('K歌unhandledrejection',{reason:String(e.reason)})});
-loadCatalog().catch(function(e){$('crawlStatus').innerHTML='<span class="bad">'+esc(e.message)+'</span>'});listDevices();loadRecordings();
+loadCatalog().catch(function(e){$('resourceStatus').innerHTML='<span class="bad">'+esc(e.message)+'</span>'});listDevices();loadRecordings();
 })();
 </script>
 </body>
