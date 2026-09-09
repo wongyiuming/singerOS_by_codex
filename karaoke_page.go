@@ -28,6 +28,15 @@ audio{width:100%;margin-top:18px}.transport{display:flex;gap:9px;flex-wrap:wrap;
 .overview{padding:18px;max-height:410px;overflow:auto}.cue{padding:9px 10px;border-radius:10px;color:#7f899b;font-size:14px;line-height:1.4}.cue.active{background:#27203f;color:#fff}.cue.past{color:#535d6d}
 .recordings{margin-top:16px}.rec{display:grid;grid-template-columns:minmax(180px,1fr) auto auto auto;gap:9px;align-items:center;padding:10px;border-top:1px solid #242c39;font-size:13px}.rec small{color:var(--muted)}
 .status{font-size:12px;color:var(--muted);margin-top:9px;line-height:1.6}.ok{color:var(--good)}.bad{color:var(--bad)}
+.lyrics-full{position:fixed;inset:0;z-index:9999;background:linear-gradient(180deg,#07090d 0%,#0b0d14 100%);display:none;overflow:hidden}
+.lyrics-full.open{display:grid;grid-template-rows:auto minmax(0,1fr)}
+.lyrics-full-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 24px;border-bottom:1px solid var(--line);background:rgba(7,9,13,.96)}
+.lyrics-full-head .song-meta{min-width:0}.lyrics-full-head h2{font-size:22px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lyrics-full-head p{color:var(--muted);margin-top:4px}
+.lyrics-full-body{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(320px,.6fr);min-height:0}
+.lyrics-stage{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:40px 6vw;min-width:0}
+.lyrics-stage .fs-current{font-size:clamp(38px,5vw,76px);line-height:1.28;font-weight:760;max-width:1100px}.lyrics-stage .fs-next{font-size:clamp(20px,2.2vw,34px);line-height:1.35;color:var(--muted);margin-top:28px;max-width:1000px}
+.lyrics-full-list{overflow:auto;padding:28px;border-left:1px solid var(--line);scroll-behavior:smooth}.fs-cue{padding:12px 14px;border-radius:12px;color:#667083;font-size:18px;line-height:1.45}.fs-cue.active{background:#2c2448;color:#fff}.fs-cue.past{color:#424a58}
+body.lyrics-open{overflow:hidden}
 @media(max-width:980px){.layout{grid-template-columns:1fr}.lyric-grid,.settings{grid-template-columns:1fr}.song-list{display:grid;grid-template-columns:repeat(2,1fr)}}
 @media(max-width:620px){.shell{padding:12px}.top{align-items:flex-start}.hero-top{flex-direction:column}.song-list{grid-template-columns:1fr}.current{font-size:28px}.rec{grid-template-columns:1fr 1fr}.rec .wide{grid-column:1/-1}}
 </style>
@@ -55,6 +64,7 @@ audio{width:100%;margin-top:18px}.transport{display:flex;gap:9px;flex-wrap:wrap;
         <button id="start" class="btn primary">开始K歌</button>
         <button id="stop" class="btn" disabled>停止并保存</button>
         <button id="play" class="btn">只播放歌曲</button>
+        <button id="lyricsFull" class="btn">歌词全屏</button>
       </div>
       <div class="settings">
         <div class="setting"><label>麦克风输入</label><div style="display:flex;gap:8px"><select id="device"><option value="">自动选择</option></select><button id="devices" class="btn">刷新</button></div></div>
@@ -75,6 +85,16 @@ audio{width:100%;margin-top:18px}.transport{display:flex;gap:9px;flex-wrap:wrap;
   </section>
 </div>
 </main>
+<div id="lyricsFullView" class="lyrics-full" aria-hidden="true">
+  <div class="lyrics-full-head">
+    <div class="song-meta"><h2 id="fsTitle">歌词</h2><p id="fsArtist"></p></div>
+    <button id="lyricsBack" class="btn">返回</button>
+  </div>
+  <div class="lyrics-full-body">
+    <div class="lyrics-stage"><div id="fsCurrent" class="fs-current">选择歌曲后开始</div><div id="fsNext" class="fs-next"></div></div>
+    <div id="fsOverview" class="lyrics-full-list"></div>
+  </div>
+</div>
 <script>
 (function(){
 'use strict';
@@ -83,6 +103,7 @@ var mic=null,recorder=null,recSession=null,seq=0,queue=Promise.resolve(),started
 var AudioCtx=window.AudioContext||window.webkitAudioContext;
 var meterCtx=null,meterSource=null,analyser=null,meterRAF=0;
 var monitorCtx=null,monitorSource=null,monitorGain=null,monitorLimiter=null,monitoring=false;
+var lyricsFullscreen=false;
 var $=function(id){return document.getElementById(id)};
 function clientLog(event,details){fetch('/singeros/api/client-log',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({event:event,details:details,clientTime:new Date().toISOString(),href:location.href,userAgent:navigator.userAgent}),keepalive:true}).catch(function(){})}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -100,7 +121,7 @@ function renderResourceStatus(){
 
 function renderSongs(){
   var items=(catalog&&catalog.songs)||[];
-  $('songs').innerHTML=items.map(function(x){return '<div class="song '+(song&&song.id===x.id?'active':'')+'" data-id="'+esc(x.id)+'"><strong>'+esc(x.title)+'</strong><small>'+esc(x.artist)+' · '+esc(x.version)+'</small></div>'}).join('')||'<div class="muted">等待定向录入粤语曲目</div>';
+  $('songs').innerHTML=items.map(function(x){var sub=[x.artist,x.album,x.year].filter(Boolean).join(' · ');return '<div class="song '+(song&&song.id===x.id?'active':'')+'" data-id="'+esc(x.id)+'"><strong>'+esc(x.title)+'</strong><small>'+esc(sub||x.version)+'</small></div>'}).join('')||'<div class="muted">等待定向录入粤语曲目</div>';
   Array.prototype.forEach.call(document.querySelectorAll('.song'),function(el){el.onclick=function(){if(!recording)selectSong(el.dataset.id)}})
 }
 function selectSong(id){
@@ -110,13 +131,15 @@ function selectSong(id){
 function applyTrack(){
   var t=trackOf();if(!t)return;
   $('title').textContent=song.title;$('artist').textContent=song.artist+' · '+t.version;
-  $('meta').innerHTML='<span class="chip">'+esc(mode==='original'?'原唱':'伴奏')+'</span><span class="chip">歌词 '+esc(t.lyrics_language)+'</span><span class="chip">'+esc(t.license)+'</span>';
-  $('track').src=t.url;$('track').load();cues=t.lyrics||[];activeCue=-1;renderOverview();updateLyrics();
+  $('fsTitle').textContent=song.title;$('fsArtist').textContent=[song.artist,song.album,song.year].filter(Boolean).join(' · ');
+  $('meta').innerHTML='<span class="chip">'+esc(mode==='original'?'原唱':'伴奏')+'</span><span class="chip">歌词 '+esc(song.lyrics_language||t.lyrics_language||'zh-Hant-HK')+'</span><span class="chip">'+esc(song.lyrics_version||t.version)+'</span>';
+  $('track').src=t.url;$('track').load();cues=(song.lyrics&&song.lyrics.length?song.lyrics:t.lyrics)||[];activeCue=-1;renderOverview();updateLyrics();
   $('original').className='btn '+(mode==='original'?'active':'');$('accompaniment').className='btn '+(mode==='accompaniment'?'active':'');
-  clientLog('K歌切换音轨',{song:song.id,mode:mode,version:t.version,lyricsLanguage:t.lyrics_language});
+  clientLog('K歌切换音轨',{song:song.id,mode:mode,version:t.version,lyricsLanguage:song.lyrics_language||t.lyrics_language,lyricsOffset:Number(t.lyrics_offset_seconds)||0});
 }
 function renderOverview(){
   $('overview').innerHTML=cues.map(function(c,i){return '<div class="cue" id="cue-'+i+'"><small>'+fmt(c.start)+'</small> '+esc(c.text)+'</div>'}).join('')||'<div class="muted">无歌词</div>';
+  $('fsOverview').innerHTML=cues.map(function(c,i){return '<div class="fs-cue" id="fs-cue-'+i+'"><small>'+fmt(c.start)+'</small> '+esc(c.text)+'</div>'}).join('')||'<div class="muted">无歌词</div>';
 }
 function cueIndexAt(t){
   for(var i=0;i<cues.length;i++){if(t>=cues[i].start&&t<cues[i].end)return i}
@@ -124,14 +147,26 @@ function cueIndexAt(t){
   return -1;
 }
 function updateLyrics(){
-  var t=$('track').currentTime||0,idx=cueIndexAt(t);
+  var tr=trackOf(),offset=Number(tr&&tr.lyrics_offset_seconds)||0,t=Math.max(0,($('track').currentTime||0)-offset),idx=cueIndexAt(t);
   if(idx!==activeCue){
     activeCue=idx;
     $('current').textContent=idx>=0?cues[idx].text:'♪';
     $('next').textContent=(idx+1<cues.length)?cues[idx+1].text:'';
+    $('fsCurrent').textContent=idx>=0?cues[idx].text:'♪';
+    $('fsNext').textContent=(idx+1<cues.length)?cues[idx+1].text:'';
     Array.prototype.forEach.call(document.querySelectorAll('.cue'),function(el,k){el.className='cue '+(k===idx?'active':k<idx?'past':'')});
+    Array.prototype.forEach.call(document.querySelectorAll('.fs-cue'),function(el,k){el.className='fs-cue '+(k===idx?'active':k<idx?'past':'')});
     var a=$('cue-'+idx);if(a)a.scrollIntoView({block:'center',behavior:'smooth'});
+    var fa=$('fs-cue-'+idx);if(fa&&lyricsFullscreen)fa.scrollIntoView({block:'center',behavior:'smooth'});
   }
+}
+function openLyricsFullscreen(){
+  lyricsFullscreen=true;$('lyricsFullView').classList.add('open');$('lyricsFullView').setAttribute('aria-hidden','false');document.body.classList.add('lyrics-open');
+  updateLyrics();clientLog('歌词全屏开启',{song:song&&song.id,mode:mode});
+}
+function closeLyricsFullscreen(){
+  lyricsFullscreen=false;$('lyricsFullView').classList.remove('open');$('lyricsFullView').setAttribute('aria-hidden','true');document.body.classList.remove('lyrics-open');
+  clientLog('歌词全屏关闭',{song:song&&song.id,mode:mode});
 }
 async function listDevices(){
   try{
@@ -211,6 +246,8 @@ $('accompaniment').onclick=function(){if(!recording&&song&&song.tracks.accompani
 $('track').ontimeupdate=updateLyrics;$('track').onseeked=updateLyrics;$('track').onended=function(){if(recording)stopKaraoke()};
 $('start').onclick=startKaraoke;$('stop').onclick=stopKaraoke;$('play').onclick=function(){if(song)$('track').play().catch(function(e){clientLog('K歌播放失败',{message:e.message})})};
 $('devices').onclick=listDevices;$('refreshRec').onclick=loadRecordings;
+$('lyricsFull').onclick=openLyricsFullscreen;$('lyricsBack').onclick=closeLyricsFullscreen;
+window.addEventListener('keydown',function(e){if(lyricsFullscreen&&(e.key==='Escape'||e.key==='Backspace')){e.preventDefault();closeLyricsFullscreen()}});
 $('monitor').onclick=function(){if(!mic)return;if(monitoring)stopMonitor();else startMonitor().catch(function(e){clientLog('K歌返听失败',{message:e.message})})};
 $('gain').oninput=function(){$('gainText').textContent=$('gain').value+'%';if(monitorGain)monitorGain.gain.value=Number($('gain').value)/100};
 window.addEventListener('error',function(e){clientLog('K歌window.error',{message:e.message,filename:e.filename,line:e.lineno,column:e.colno})});

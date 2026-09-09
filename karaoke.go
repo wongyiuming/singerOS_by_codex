@@ -41,7 +41,8 @@ type KaraokeTrack struct {
 	SourcePage     string       `json:"source_page,omitempty"`
 	License        string       `json:"license,omitempty"`
 	Language       string       `json:"language"`
-	LyricsLanguage string       `json:"lyrics_language"`
+	LyricsLanguage string       `json:"lyrics_language,omitempty"`
+	LyricsOffset   float64      `json:"lyrics_offset_seconds,omitempty"`
 	Duration       float64      `json:"duration_seconds"`
 	Bytes          int64        `json:"bytes"`
 	URL            string       `json:"url"`
@@ -50,12 +51,18 @@ type KaraokeTrack struct {
 }
 
 type KaraokeSong struct {
-	ID       string                  `json:"id"`
-	Title    string                  `json:"title"`
-	Artist   string                  `json:"artist"`
-	Version  string                  `json:"version"`
-	Language string                  `json:"language"`
-	Tracks   map[string]KaraokeTrack `json:"tracks"`
+	ID             string                  `json:"id"`
+	Title          string                  `json:"title"`
+	Artist         string                  `json:"artist"`
+	Album          string                  `json:"album,omitempty"`
+	Year           int                     `json:"year,omitempty"`
+	TrackNo        int                     `json:"track_no,omitempty"`
+	Version        string                  `json:"version"`
+	Language       string                  `json:"language"`
+	LyricsLanguage string                  `json:"lyrics_language,omitempty"`
+	LyricsVersion  string                  `json:"lyrics_version,omitempty"`
+	Lyrics         []KaraokeCue            `json:"lyrics,omitempty"`
+	Tracks         map[string]KaraokeTrack `json:"tracks"`
 }
 
 type KaraokeCatalog struct {
@@ -116,7 +123,8 @@ func (s *KaraokeService) validLocalSong(song KaraokeSong) bool {
 	}
 	for _, mode := range []string{"original", "accompaniment"} {
 		track, ok := song.Tracks[mode]
-		if !ok || track.Mode != mode || track.SourceType != "local" || track.Language != "粵語" || len(track.Lyrics) == 0 || track.SourceFile == "" {
+		hasLyrics := len(song.Lyrics) > 0 || len(track.Lyrics) > 0
+		if !ok || track.Mode != mode || track.SourceType != "local" || track.Language != "粵語" || !hasLyrics || track.SourceFile == "" {
 			return false
 		}
 		ext := strings.ToLower(filepath.Ext(track.SourceFile))
