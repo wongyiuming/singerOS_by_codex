@@ -65,11 +65,32 @@ type KaraokeSong struct {
 	Tracks         map[string]KaraokeTrack `json:"tracks"`
 }
 
+type KaraokeAlbum struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Year     int    `json:"year"`
+	Language string `json:"language"`
+	Order    int    `json:"order"`
+}
+
 type KaraokeCatalog struct {
-	Provider  string        `json:"provider"`
-	Language  string        `json:"language"`
-	UpdatedAt string        `json:"updated_at_shanghai,omitempty"`
-	Songs     []KaraokeSong `json:"songs"`
+	Provider  string         `json:"provider"`
+	Language  string         `json:"language"`
+	UpdatedAt string         `json:"updated_at_shanghai,omitempty"`
+	Albums    []KaraokeAlbum `json:"albums"`
+	Songs     []KaraokeSong  `json:"songs"`
+}
+
+var curatedAlbums = []KaraokeAlbum{
+	{ID: "faith-hope-love-1992", Title: "信望愛", Year: 1992, Language: "粵語", Order: 1},
+	{ID: "borrow-your-love-1993", Title: "借借你的愛", Year: 1993, Language: "粵語", Order: 2},
+	{ID: "not-an-angel-1994", Title: "明明不是天使", Year: 1994, Language: "國語", Order: 3},
+	{ID: "beautiful-night-1995", Title: "愈夜愈美麗", Year: 1995, Language: "粵語", Order: 4},
+	{ID: "feng-yue-bao-jian-1997", Title: "風月寶鑑", Year: 1997, Language: "粵語", Order: 5},
+	{ID: "people-mountain-people-sea-1997", Title: "人山人海", Year: 1997, Language: "粵語", Order: 6},
+	{ID: "broad-daylight-2000", Title: "光天化日", Year: 2000, Language: "粵語", Order: 7},
+	{ID: "my-21st-century-2003", Title: "我的廿一世紀", Year: 2003, Language: "粵語", Order: 8},
+	{ID: "tomorrows-song-2004", Title: "明日之歌", Year: 2004, Language: "粵語", Order: 9},
 }
 
 type KaraokeService struct {
@@ -88,7 +109,8 @@ func newKaraokeService(dataDir string) *KaraokeService {
 		assets: assets,
 		catalog: KaraokeCatalog{
 			Provider: "manual-curated-local",
-			Language: "粵語",
+			Language: "粵語/國語",
+			Albums:   append([]KaraokeAlbum(nil), curatedAlbums...),
 			Songs:    []KaraokeSong{},
 		},
 	}
@@ -102,9 +124,11 @@ func (s *KaraokeService) load() {
 		return
 	}
 	var c KaraokeCatalog
-	if json.Unmarshal(b, &c) != nil || c.Provider != "manual-curated-local" || c.Language != "粵語" {
+	if json.Unmarshal(b, &c) != nil || c.Provider != "manual-curated-local" {
 		return
 	}
+	c.Language = "粵語/國語"
+	c.Albums = append([]KaraokeAlbum(nil), curatedAlbums...)
 	valid := make([]KaraokeSong, 0, len(c.Songs))
 	for _, song := range c.Songs {
 		if s.validLocalSong(song) {
@@ -118,13 +142,13 @@ func (s *KaraokeService) load() {
 }
 
 func (s *KaraokeService) validLocalSong(song KaraokeSong) bool {
-	if song.ID == "" || song.Title == "" || song.Artist == "" || song.Language != "粵語" {
+	if song.ID == "" || song.Title == "" || song.Artist == "" || (song.Language != "粵語" && song.Language != "國語") {
 		return false
 	}
 	for _, mode := range []string{"original", "accompaniment"} {
 		track, ok := song.Tracks[mode]
 		hasLyrics := len(song.Lyrics) > 0 || len(track.Lyrics) > 0
-		if !ok || track.Mode != mode || track.SourceType != "local" || track.Language != "粵語" || !hasLyrics || track.SourceFile == "" {
+		if !ok || track.Mode != mode || track.SourceType != "local" || (track.Language != "粵語" && track.Language != "國語") || !hasLyrics || track.SourceFile == "" {
 			return false
 		}
 		ext := strings.ToLower(filepath.Ext(track.SourceFile))

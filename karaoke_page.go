@@ -116,14 +116,20 @@ async function loadCatalog(){
 }
 function renderResourceStatus(){
   var el=$('resourceStatus');if(!catalog){el.textContent='目录不可用';return}
-  el.innerHTML='模式：RN 本地资源<br>语言：'+esc(catalog.language||'粵語')+'<br>曲目：'+((catalog.songs||[]).length)+' 首'+(catalog.updated_at_shanghai?'<br>更新：'+esc(catalog.updated_at_shanghai):'');
+  el.innerHTML='模式：RN 本地资源<br>语言：'+esc(catalog.language||'粵語/國語')+'<br>专辑：'+((catalog.albums||[]).length)+' 张 · 曲目：'+((catalog.songs||[]).length)+' 首'+(catalog.updated_at_shanghai?'<br>更新：'+esc(catalog.updated_at_shanghai):'');
 }
 
 function renderSongs(){
-  var items=(catalog&&catalog.songs)||[];
-  $('songs').innerHTML=items.map(function(x){var sub=[x.artist,x.album,x.year].filter(Boolean).join(' · ');return '<div class="song '+(song&&song.id===x.id?'active':'')+'" data-id="'+esc(x.id)+'"><strong>'+esc(x.title)+'</strong><small>'+esc(sub||x.version)+'</small></div>'}).join('')||'<div class="muted">等待定向录入粤语曲目</div>';
+  var items=(catalog&&catalog.songs)||[],albums=(catalog&&catalog.albums)||[];
+  if(!albums.length){$('songs').innerHTML='<div class="muted">等待定向录入专辑</div>';return}
+  $('songs').innerHTML=albums.map(function(a){
+    var xs=items.filter(function(x){return x.album===a.title}).sort(function(x,y){return (x.track_no||999)-(y.track_no||999)});
+    var rows=xs.length?xs.map(function(x){return '<div class="song '+(song&&song.id===x.id?'active':'')+'" data-id="'+esc(x.id)+'"><strong>'+(x.track_no?String(x.track_no).padStart(2,'0')+' · ':'')+esc(x.title)+'</strong><small>'+esc(x.artist)+' · '+esc(x.language||a.language)+'</small></div>'}).join(''):'<div class="muted" style="padding:10px 4px 14px">待入库</div>';
+    return '<section class="album-group"><div style="padding:12px 4px 8px"><strong>'+esc(a.title)+'</strong><small style="display:block;color:var(--muted);margin-top:3px">'+esc(a.year)+' · '+esc(a.language)+'</small></div>'+rows+'</section>';
+  }).join('');
   Array.prototype.forEach.call(document.querySelectorAll('.song'),function(el){el.onclick=function(){if(!recording)selectSong(el.dataset.id)}})
 }
+
 function selectSong(id){
   var found=(catalog.songs||[]).find(function(x){return x.id===id});if(!found)return;
   song=found;mode=song.tracks.accompaniment?'accompaniment':'original';renderSongs();applyTrack();
