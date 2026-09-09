@@ -21,7 +21,7 @@ h1,h2,h3,p{margin:0}.brand p,.muted{color:var(--muted)}a{color:#c4baff;text-deco
 audio{width:100%;margin-top:18px}.transport{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}.transport .btn{min-height:50px}
 .settings{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:15px}.setting{border:1px solid var(--line);background:#0c1016;border-radius:14px;padding:12px}
 .setting label{display:block;color:var(--muted);font-size:12px;margin-bottom:7px}select{width:100%;min-height:42px;border:1px solid #3a4455;border-radius:10px;background:#111722;color:white;padding:0 10px}
-.monitor-row{display:flex;align-items:center;gap:10px}.monitor-row input[type=range]{width:100%}
+.monitor-row,.console-row{display:flex;align-items:center;gap:10px}.monitor-row input[type=range],.console-row input[type=range]{width:100%}.level-readout{min-width:48px;text-align:right;font-variant-numeric:tabular-nums}.check-row{display:flex;align-items:center;gap:10px;min-height:42px}.check-row input{width:20px;height:20px}
 .meter{height:7px;border-radius:99px;background:#090c11;overflow:hidden;margin-top:12px}.meter>div{height:100%;width:0;background:linear-gradient(90deg,#53dea0,#ffd065,#ff7782)}
 .lyric-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(300px,.75fr);gap:16px}.live{min-height:310px;display:flex;flex-direction:column;justify-content:center;text-align:center;padding:28px}
 .live .label{color:#a997ff;text-transform:uppercase;letter-spacing:.14em;font-size:11px;font-weight:800}.current{font-size:36px;line-height:1.3;font-weight:760;margin:20px 0 13px}.next{font-size:19px;color:#8e98aa}
@@ -68,7 +68,11 @@ body.lyrics-open{overflow:hidden}
       </div>
       <div class="settings">
         <div class="setting"><label>麦克风输入</label><div style="display:flex;gap:8px"><select id="device"><option value="">自动选择</option></select><button id="devices" class="btn">刷新</button></div></div>
-        <div class="setting"><label>实时返听</label><div class="monitor-row"><button id="monitor" class="btn" disabled>打开返听</button><span id="gainText">85%</span><input id="gain" type="range" min="0" max="150" value="85"></div></div>
+        <div class="setting"><label>歌曲播放电平</label><div class="console-row"><span id="songGainText" class="level-readout">35%</span><input id="songGain" type="range" min="0" max="100" value="35"><button id="songMute" class="btn">静音</button></div></div>
+        <div class="setting"><label>人声录制增益 · 只进入人声录音总线</label><div class="console-row"><span id="recordGainText" class="level-readout">170%</span><input id="recordGain" type="range" min="0" max="300" value="170"></div></div>
+        <div class="setting"><label>实时返听增益 · 不影响录音文件</label><div class="monitor-row"><button id="monitor" class="btn" disabled>打开返听</button><span id="gainText" class="level-readout">100%</span><input id="gain" type="range" min="0" max="200" value="100"></div></div>
+        <div class="setting"><label>防伴奏串录</label><div class="check-row"><input id="aec" type="checkbox" checked><span>AEC 开启（抑制扬声器伴奏被麦克风再次收录）</span></div></div>
+        <div class="setting"><label>录音路由</label><div class="status ok" style="margin:0">仅麦克风 → 人声增益 → Limiter → 录音；歌曲不进入录音总线</div></div>
       </div>
       <div class="meter"><div id="meterBar"></div></div>
       <div id="captureStatus" class="status">未采集麦克风</div>
@@ -102,6 +106,7 @@ var catalog=null,song=null,mode='accompaniment',cues=[],activeCue=-1;
 var mic=null,recorder=null,recSession=null,seq=0,queue=Promise.resolve(),startedPerf=0,recording=false;
 var AudioCtx=window.AudioContext||window.webkitAudioContext;
 var meterCtx=null,meterSource=null,analyser=null,meterRAF=0;
+var recordCtx=null,recordSource=null,recordGainNode=null,recordLimiter=null,recordDest=null,recordStream=null;
 var monitorCtx=null,monitorSource=null,monitorGain=null,monitorLimiter=null,monitoring=false;
 var lyricsFullscreen=false;
 var $=function(id){return document.getElementById(id)};
@@ -139,7 +144,7 @@ function applyTrack(){
   $('title').textContent=song.title;$('artist').textContent=song.artist+' · '+t.version;
   $('fsTitle').textContent=song.title;$('fsArtist').textContent=[song.artist,song.album,song.year].filter(Boolean).join(' · ');
   $('meta').innerHTML='<span class="chip">'+esc(mode==='original'?'原唱':'伴奏')+'</span><span class="chip">歌词 '+esc(song.lyrics_language||t.lyrics_language||'zh-Hant-HK')+'</span><span class="chip">'+esc(song.lyrics_version||t.version)+'</span>';
-  $('track').src=t.url;$('track').load();cues=(song.lyrics&&song.lyrics.length?song.lyrics:t.lyrics)||[];activeCue=-1;renderOverview();updateLyrics();
+  $('track').src=t.url;$('track').volume=Number($('songGain').value)/100;$('track').load();cues=(song.lyrics&&song.lyrics.length?song.lyrics:t.lyrics)||[];activeCue=-1;renderOverview();updateLyrics();
   $('original').className='btn '+(mode==='original'?'active':'');$('accompaniment').className='btn '+(mode==='accompaniment'?'active':'');
   $('original').disabled=!song.tracks.original||recording;$('accompaniment').disabled=!song.tracks.accompaniment||recording;
   clientLog('K歌切换音轨',{song:song.id,mode:mode,version:t.version,lyricsLanguage:song.lyrics_language||t.lyrics_language,lyricsOffset:Number(t.lyrics_offset_seconds)||0});
@@ -183,11 +188,31 @@ async function listDevices(){
     clientLog('K歌麦克风枚举',{count:audio.length,labels:audio.map(function(d){return d.label})});
   }catch(e){$('captureStatus').innerHTML='<span class="bad">'+esc(e.name+': '+e.message)+'</span>';clientLog('K歌设备枚举失败',{name:e.name,message:e.message})}
 }
+async function setupRecordingBus(){
+  if(!AudioCtx||!mic)throw new Error('WebAudio unavailable');
+  var tr=mic.getAudioTracks()[0],settings=tr&&tr.getSettings?tr.getSettings():{};
+  var opts={latencyHint:'interactive'};if(settings.sampleRate)opts.sampleRate=settings.sampleRate;
+  try{recordCtx=new AudioCtx(opts)}catch(_){recordCtx=new AudioCtx({latencyHint:'interactive'})}
+  if(recordCtx.state==='suspended')await recordCtx.resume();
+  recordSource=recordCtx.createMediaStreamSource(mic);
+  recordGainNode=recordCtx.createGain();recordGainNode.gain.value=Number($('recordGain').value)/100;
+  recordLimiter=recordCtx.createDynamicsCompressor();recordLimiter.threshold.value=-1;recordLimiter.knee.value=0;recordLimiter.ratio.value=20;recordLimiter.attack.value=.001;recordLimiter.release.value=.08;
+  recordDest=recordCtx.createMediaStreamDestination();
+  recordSource.connect(recordGainNode);recordGainNode.connect(recordLimiter);recordLimiter.connect(recordDest);
+  recordStream=recordDest.stream;
+  clientLog('K歌纯人声录音总线建立',{recordGain:recordGainNode.gain.value,sampleRate:recordCtx.sampleRate,tracks:recordStream.getAudioTracks().length,aec:$('aec').checked});
+}
+async function closeRecordingBus(){
+  try{recordSource&&recordSource.disconnect()}catch(_){}try{recordGainNode&&recordGainNode.disconnect()}catch(_){}try{recordLimiter&&recordLimiter.disconnect()}catch(_){}
+  if(recordStream)recordStream.getTracks().forEach(function(t){try{t.stop()}catch(_){}});
+  if(recordCtx&&recordCtx.state!=='closed')try{await recordCtx.close()}catch(_){}
+  recordCtx=recordSource=recordGainNode=recordLimiter=recordDest=recordStream=null;
+}
 async function setupMeter(){
-  if(!AudioCtx||!mic)return;
+  if(!AudioCtx||!(recordStream||mic))return;
   meterCtx=new AudioCtx({latencyHint:'interactive'});
   if(meterCtx.state==='suspended')await meterCtx.resume();
-  meterSource=meterCtx.createMediaStreamSource(mic);analyser=meterCtx.createAnalyser();analyser.fftSize=1024;meterSource.connect(analyser);
+  meterSource=meterCtx.createMediaStreamSource(recordStream||mic);analyser=meterCtx.createAnalyser();analyser.fftSize=1024;meterSource.connect(analyser);
   var data=new Uint8Array(analyser.fftSize);
   function tick(){if(!analyser)return;analyser.getByteTimeDomainData(data);var sum=0;for(var i=0;i<data.length;i++){var v=(data[i]-128)/128;sum+=v*v}var rms=Math.sqrt(sum/data.length),db=rms?20*Math.log10(rms):-80;$('meterBar').style.width=Math.max(0,Math.min(100,(db+60)*1.67))+'%';meterRAF=requestAnimationFrame(tick)}tick();
 }
@@ -217,16 +242,20 @@ async function startKaraoke(){
   try{
     if(!window.isSecureContext||!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw new Error('getUserMedia unavailable');
     var dev=$('device').value;
-    mic=await navigator.mediaDevices.getUserMedia({audio:Object.assign(dev?{deviceId:{exact:dev}}:{},{sampleRate:{ideal:48000},sampleSize:{ideal:16},channelCount:{ideal:2},latency:{ideal:.002},echoCancellation:false,noiseSuppression:false,autoGainControl:false})});
-    await listDevices();await setupMeter();
+    mic=await navigator.mediaDevices.getUserMedia({audio:Object.assign(dev?{deviceId:{exact:dev}}:{},{sampleRate:{ideal:48000},sampleSize:{ideal:16},channelCount:{ideal:2},latency:{ideal:.002},echoCancellation:{ideal:$('aec').checked},noiseSuppression:false,autoGainControl:false})});
+    await listDevices();await setupRecordingBus();await setupMeter();
     var pref=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4'];var mime=pref.find(function(x){return window.MediaRecorder&&MediaRecorder.isTypeSupported(x)})||'';
     recSession=await startSession(mime);seq=0;queue=Promise.resolve();
-    recorder=new MediaRecorder(mic,mime?{mimeType:mime,audioBitsPerSecond:256000}:{audioBitsPerSecond:256000});
+    recorder=new MediaRecorder(recordStream,mime?{mimeType:mime,audioBitsPerSecond:256000}:{audioBitsPerSecond:256000});
     recorder.ondataavailable=function(e){if(!e.data||!e.data.size)return;var n=seq++;queue=queue.then(function(){return upload(e.data,n)}).catch(function(err){clientLog('K歌分片上传失败',{message:String(err),seq:n})})};
     recorder.onerror=function(e){clientLog('K歌MediaRecorder错误',{message:e.error&&e.error.message})};
-    recorder.start(5000);recording=true;startedPerf=performance.now();$('start').disabled=true;$('stop').disabled=false;$('monitor').disabled=false;$('original').disabled=true;$('accompaniment').disabled=true;$('captureStatus').innerHTML='<span class="ok">录制中 · '+esc(mode==='original'?'原唱':'伴奏')+'</span>';
-    $('track').currentTime=0;await $('track').play();clientLog('K歌开始',{song:song.title,mode:mode,mime:mime});
-  }catch(e){$('captureStatus').innerHTML='<span class="bad">'+esc((e.name||'Error')+': '+(e.message||e))+'</span>';clientLog('K歌启动失败',{name:e.name,message:e.message,stack:e.stack})}
+    recorder.start(5000);recording=true;startedPerf=performance.now();$('start').disabled=true;$('stop').disabled=false;$('monitor').disabled=false;$('original').disabled=true;$('accompaniment').disabled=true;$('aec').disabled=true;$('captureStatus').innerHTML='<span class="ok">录制中 · 仅人声 · '+esc(mode==='original'?'原唱':'伴奏')+'</span>';
+    $('track').currentTime=0;await $('track').play();clientLog('K歌开始',{song:song.title,mode:mode,mime:mime,recordBus:'mic-only',recordGain:Number($('recordGain').value)/100,songGain:Number($('songGain').value)/100,aec:$('aec').checked});
+  }catch(e){
+    try{if(recordStream)await closeRecordingBus()}catch(_){}
+    if(mic)mic.getTracks().forEach(function(t){try{t.stop()}catch(_){}});mic=null;recorder=null;$('aec').disabled=false;
+    $('captureStatus').innerHTML='<span class="bad">'+esc((e.name||'Error')+': '+(e.message||e))+'</span>';clientLog('K歌启动失败',{name:e.name,message:e.message,stack:e.stack})
+  }
 }
 async function stopKaraoke(){
   if(!recording)return;
@@ -239,9 +268,10 @@ async function stopKaraoke(){
     var r=await fetch('/singeros/api/karaoke/recordings/'+recSession.id+'/finalize',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({duration_seconds:duration,track_seconds:played})});if(!r.ok)throw new Error(await r.text());
     var saved=await r.json();$('captureStatus').innerHTML='<span class="ok">已保存：'+esc(saved.file)+' · '+fmt(saved.duration_seconds)+' · '+esc(saved.created_at_shanghai)+'</span>';clientLog('K歌保存完成',saved);await loadRecordings();
   }catch(e){$('captureStatus').innerHTML='<span class="bad">保存失败：'+esc(e.message||e)+'</span>';clientLog('K歌保存失败',{message:String(e)})}
+  await closeRecordingBus();
   if(mic)mic.getTracks().forEach(function(t){t.stop()});mic=null;recorder=null;recSession=null;
   if(meterRAF)cancelAnimationFrame(meterRAF);try{meterSource&&meterSource.disconnect()}catch(_){}if(meterCtx&&meterCtx.state!=='closed')try{await meterCtx.close()}catch(_){}
-  meterCtx=meterSource=analyser=null;$('meterBar').style.width='0';$('start').disabled=false;$('stop').disabled=true;$('monitor').disabled=true;$('original').disabled=!song.tracks.original;$('accompaniment').disabled=!song.tracks.accompaniment;
+  meterCtx=meterSource=analyser=null;$('meterBar').style.width='0';$('start').disabled=false;$('stop').disabled=true;$('monitor').disabled=true;$('aec').disabled=false;$('original').disabled=!song.tracks.original;$('accompaniment').disabled=!song.tracks.accompaniment;
 }
 async function loadRecordings(){
   var r=await fetch('/singeros/api/karaoke/recordings',{cache:'no-store'}),xs=await r.json();
@@ -257,6 +287,9 @@ $('lyricsFull').onclick=openLyricsFullscreen;$('lyricsBack').onclick=closeLyrics
 window.addEventListener('keydown',function(e){if(lyricsFullscreen&&(e.key==='Escape'||e.key==='Backspace')){e.preventDefault();closeLyricsFullscreen()}});
 $('monitor').onclick=function(){if(!mic)return;if(monitoring)stopMonitor();else startMonitor().catch(function(e){clientLog('K歌返听失败',{message:e.message})})};
 $('gain').oninput=function(){$('gainText').textContent=$('gain').value+'%';if(monitorGain)monitorGain.gain.value=Number($('gain').value)/100};
+$('recordGain').oninput=function(){$('recordGainText').textContent=$('recordGain').value+'%';if(recordGainNode)recordGainNode.gain.value=Number($('recordGain').value)/100};
+$('songGain').oninput=function(){$('songGainText').textContent=$('songGain').value+'%';$('track').volume=Number($('songGain').value)/100;if(Number($('songGain').value)>0)$('songMute').textContent='静音'};
+$('songMute').onclick=function(){if($('track').volume>0){$('track').dataset.beforeMute=String($('songGain').value);$('track').volume=0;$('songMute').textContent='恢复'}else{var v=Number($('track').dataset.beforeMute||$('songGain').value||35);$('track').volume=Math.min(1,v/100);$('songGain').value=String(v);$('songGainText').textContent=v+'%';$('songMute').textContent='静音'}};
 window.addEventListener('error',function(e){clientLog('K歌window.error',{message:e.message,filename:e.filename,line:e.lineno,column:e.colno})});
 window.addEventListener('unhandledrejection',function(e){clientLog('K歌unhandledrejection',{reason:String(e.reason)})});
 loadCatalog().catch(function(e){$('resourceStatus').innerHTML='<span class="bad">'+esc(e.message)+'</span>'});listDevices();loadRecordings();
