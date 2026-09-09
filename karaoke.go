@@ -399,6 +399,14 @@ func registerKaraokeRoutes(r *gin.Engine, dataDir string, secureHeaders func(*gi
 			c.Status(http.StatusNotFound)
 			return
 		}
+		switch strings.ToLower(filepath.Ext(p)) {
+		case ".ogg", ".opus":
+			c.Header("Content-Type", "audio/ogg")
+		case ".webm":
+			c.Header("Content-Type", "audio/webm")
+		case ".m4a", ".mp4":
+			c.Header("Content-Type", "audio/mp4")
+		}
 		c.File(p)
 	})
 	api.POST("/recordings/start", func(c *gin.Context) {
