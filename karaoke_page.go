@@ -124,7 +124,7 @@ function renderSongs(){
   if(!albums.length){$('songs').innerHTML='<div class="muted">等待定向录入专辑</div>';return}
   $('songs').innerHTML=albums.map(function(a){
     var xs=items.filter(function(x){return x.album===a.title}).sort(function(x,y){return (x.track_no||999)-(y.track_no||999)});
-    var rows=xs.length?xs.map(function(x){return '<div class="song '+(song&&song.id===x.id?'active':'')+'" data-id="'+esc(x.id)+'"><strong>'+(x.track_no?String(x.track_no).padStart(2,'0')+' · ':'')+esc(x.title)+'</strong><small>'+esc(x.artist)+' · '+esc(x.language||a.language)+'</small></div>'}).join(''):'<div class="muted" style="padding:10px 4px 14px">待入库</div>';
+    var rows=xs.length?xs.map(function(x){var hasO=!!(x.tracks&&x.tracks.original),hasA=!!(x.tracks&&x.tracks.accompaniment),hasL=!!(x.lyrics&&x.lyrics.length);var st=(hasO?'原唱✓':'原唱待补')+' · '+(hasA?'伴奏✓':'伴奏待补')+' · '+(hasL?'歌词✓':'歌词待校准');return '<div class="song '+(song&&song.id===x.id?'active':'')+'" data-id="'+esc(x.id)+'"><strong>'+(x.track_no?String(x.track_no).padStart(2,'0')+' · ':'')+esc(x.title)+'</strong><small>'+esc(x.artist)+' · '+esc(x.language||a.language)+'</small><small>'+esc(st)+'</small></div>'}).join(''):'<div class="muted" style="padding:10px 4px 14px">待入库</div>';
     return '<section class="album-group"><div style="padding:12px 4px 8px"><strong>'+esc(a.title)+'</strong><small style="display:block;color:var(--muted);margin-top:3px">'+esc(a.year)+' · '+esc(a.language)+'</small></div>'+rows+'</section>';
   }).join('');
   Array.prototype.forEach.call(document.querySelectorAll('.song'),function(el){el.onclick=function(){if(!recording)selectSong(el.dataset.id)}})
@@ -141,6 +141,7 @@ function applyTrack(){
   $('meta').innerHTML='<span class="chip">'+esc(mode==='original'?'原唱':'伴奏')+'</span><span class="chip">歌词 '+esc(song.lyrics_language||t.lyrics_language||'zh-Hant-HK')+'</span><span class="chip">'+esc(song.lyrics_version||t.version)+'</span>';
   $('track').src=t.url;$('track').load();cues=(song.lyrics&&song.lyrics.length?song.lyrics:t.lyrics)||[];activeCue=-1;renderOverview();updateLyrics();
   $('original').className='btn '+(mode==='original'?'active':'');$('accompaniment').className='btn '+(mode==='accompaniment'?'active':'');
+  $('original').disabled=!song.tracks.original||recording;$('accompaniment').disabled=!song.tracks.accompaniment||recording;
   clientLog('K歌切换音轨',{song:song.id,mode:mode,version:t.version,lyricsLanguage:song.lyrics_language||t.lyrics_language,lyricsOffset:Number(t.lyrics_offset_seconds)||0});
 }
 function renderOverview(){
@@ -240,7 +241,7 @@ async function stopKaraoke(){
   }catch(e){$('captureStatus').innerHTML='<span class="bad">保存失败：'+esc(e.message||e)+'</span>';clientLog('K歌保存失败',{message:String(e)})}
   if(mic)mic.getTracks().forEach(function(t){t.stop()});mic=null;recorder=null;recSession=null;
   if(meterRAF)cancelAnimationFrame(meterRAF);try{meterSource&&meterSource.disconnect()}catch(_){}if(meterCtx&&meterCtx.state!=='closed')try{await meterCtx.close()}catch(_){}
-  meterCtx=meterSource=analyser=null;$('meterBar').style.width='0';$('start').disabled=false;$('stop').disabled=true;$('monitor').disabled=true;$('original').disabled=false;$('accompaniment').disabled=false;
+  meterCtx=meterSource=analyser=null;$('meterBar').style.width='0';$('start').disabled=false;$('stop').disabled=true;$('monitor').disabled=true;$('original').disabled=!song.tracks.original;$('accompaniment').disabled=!song.tracks.accompaniment;
 }
 async function loadRecordings(){
   var r=await fetch('/singeros/api/karaoke/recordings',{cache:'no-store'}),xs=await r.json();

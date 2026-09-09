@@ -91,6 +91,10 @@ var curatedAlbums = []KaraokeAlbum{
 	{ID: "broad-daylight-2000", Title: "光天化日", Year: 2000, Language: "粵語", Order: 7},
 	{ID: "my-21st-century-2003", Title: "我的廿一世紀", Year: 2003, Language: "粵語", Order: 8},
 	{ID: "tomorrows-song-2004", Title: "明日之歌", Year: 2004, Language: "粵語", Order: 9},
+	{ID: "five-cakes-two-fish-1996", Title: "5餅2魚", Year: 1996, Language: "粵語", Order: 10},
+	{ID: "off-the-mountain-2011", Title: "拂了一身還滿", Year: 2011, Language: "粵語/國語", Order: 11},
+	{ID: "under-lion-rock-2014", Title: "太平山下", Year: 2014, Language: "粵語", Order: 12},
+	{ID: "singles-film", Title: "單曲 / 電影歌曲", Year: 1998, Language: "粵語/國語", Order: 13},
 }
 
 type KaraokeService struct {
@@ -145,10 +149,13 @@ func (s *KaraokeService) validLocalSong(song KaraokeSong) bool {
 	if song.ID == "" || song.Title == "" || song.Artist == "" || (song.Language != "粵語" && song.Language != "國語") {
 		return false
 	}
+	validTracks := 0
 	for _, mode := range []string{"original", "accompaniment"} {
 		track, ok := song.Tracks[mode]
-		hasLyrics := len(song.Lyrics) > 0 || len(track.Lyrics) > 0
-		if !ok || track.Mode != mode || track.SourceType != "local" || (track.Language != "粵語" && track.Language != "國語") || !hasLyrics || track.SourceFile == "" {
+		if !ok {
+			continue
+		}
+		if track.Mode != mode || track.SourceType != "local" || (track.Language != "粵語" && track.Language != "國語") || track.SourceFile == "" {
 			return false
 		}
 		ext := strings.ToLower(filepath.Ext(track.SourceFile))
@@ -160,8 +167,9 @@ func (s *KaraokeService) validLocalSong(song KaraokeSong) bool {
 		if err != nil || st.IsDir() || st.Size() <= 0 {
 			return false
 		}
+		validTracks++
 	}
-	return true
+	return validTracks > 0
 }
 
 func (s *KaraokeService) snapshot() KaraokeCatalog {
