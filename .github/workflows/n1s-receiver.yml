@@ -36,9 +36,27 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Restore stable development signing key
-        working-directory: n1s-receiver
-        run: base64 -d n1s-receiver-dev.jks.b64 > n1s-receiver-dev.jks
+      - name: Restore signing key cache
+        uses: actions/cache@v4
+        with:
+          path: n1s-receiver/signing-cache/n1s-receiver-dev.jks
+          key: n1s-receiver-signing-v1
+
+      - name: Create signing key if missing
+        run: |
+          mkdir -p n1s-receiver/signing-cache
+          if [ ! -s n1s-receiver/signing-cache/n1s-receiver-dev.jks ]; then
+            keytool -genkeypair -noprompt \
+              -keystore n1s-receiver/signing-cache/n1s-receiver-dev.jks \
+              -storetype JKS \
+              -storepass n1sreceiver \
+              -keypass n1sreceiver \
+              -alias n1sreceiver \
+              -keyalg RSA -keysize 2048 -validity 36500 \
+              -dname 'CN=N1S Receiver Dev,O=Local Tools,C=CN'
+          fi
+          cp n1s-receiver/signing-cache/n1s-receiver-dev.jks n1s-receiver/n1s-receiver-dev.jks
+          keytool -list -keystore n1s-receiver/n1s-receiver-dev.jks -storepass n1sreceiver -alias n1sreceiver
 
       - name: Build signed release APK
         run: gradle -p n1s-receiver :app:assembleRelease --stacktrace
@@ -47,6 +65,8 @@ jobs:
         run: |
           mkdir -p dist
           cp n1s-receiver/app/build/outputs/apk/release/app-release.apk dist/N1S-Receiver.apk
+          cp n1s-receiver/signing-cache/n1s-receiver-dev.jks dist/N1S-Receiver-signing-key.jks
+          printf 'alias=n1sreceiver\nstorePassword=n1sreceiver\nkeyPassword=n1sreceiver\n' > dist/signing-info.txt
           sha256sum dist/N1S-Receiver.apk | tee dist/N1S-Receiver.apk.sha256
 
       - name: Upload APK
