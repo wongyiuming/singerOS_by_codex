@@ -1,0 +1,38 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.n1s.receiver'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.n1s.receiver'
+        minSdk 21
+        targetSdk 28
+        versionCode 1
+        versionName '1.0.0'
+    }
+
+    signingConfigs {
+        release {
+            storeFile rootProject.file('n1s-receiver-dev.jks')
+            storePassword 'n1sreceiver'
+            keyAlias 'n1sreceiver'
+            keyPassword 'n1sreceiver'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
