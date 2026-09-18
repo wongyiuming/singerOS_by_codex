@@ -1,0 +1,24 @@
+services:
+  singeros:
+    image: alpine:3.22
+    container_name: singeros_app
+    restart: unless-stopped
+    working_dir: /app
+    command: ["/app/singerOS", "-listen", ":8080", "-data", "/app/recordings"]
+    volumes:
+      - /opt/singeros:/app
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/singeros/healthz | grep -q '\"ok\":true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    networks:
+      - singeros_net
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  singeros_net:
+    external: true
+    name: singeros_net
