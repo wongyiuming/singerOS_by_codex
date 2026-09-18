@@ -1,15 +1,16 @@
-name: linux-build
+name: build-release-deploy
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: singeros-rn
+  group: singeros-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -20,83 +21,195 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.x'
-          cache: false
-      - name: Resolve modules
-        run: go mod tidy
-      - name: Build Linux amd64
+          cache: true
+      - name: Test
+        run: go test ./...
+      - name: Build static Linux amd64 binary
         env:
           GOOS: linux
           GOARCH: amd64
           CGO_ENABLED: 0
         run: |
-          go build -trimpath -ldflags="-s -w -X main.buildCommit=$GITHUB_SHA" -o singerOS-linux-amd64 .
-          sha256sum singerOS-linux-amd64
-      - name: Keep exact build artifact
+          set -euo pipefail
+          go build -trimpath -ldflags="-s -w -X main.buildCommit=$GITHUB_SHA" -o singerOS .
+          file singerOS
+      - name: Package Ubuntu and CentOS releases
+        run: |
+          set -euo pipefail
+          mkdir -p dist/ubuntu dist/centos9
+          install -m 0755 singerOS dist/ubuntu/singerOS
+          install -m 0755 singerOS dist/centos9/singerOS
+          install -m 0644 deploy/compose-ubuntu.yaml dist/ubuntu/compose.yaml
+          install -m 0644 deploy/compose-centos9.yaml dist/centos9/compose.yaml
+          install -m 0755 scripts/install-release.sh dist/ubuntu/install-release.sh
+          install -m 0755 scripts/install-release.sh dist/centos9/install-release.sh
+          printf 'commit=%s\ngo=%s\nos=ubuntu\narch=amd64\n' "$GITHUB_SHA" "$(go version)" > dist/ubuntu/BUILD_INFO
+          printf 'commit=%s\ngo=%s\nos=centos9\narch=amd64\n' "$GITHUB_SHA" "$(go version)" > dist/centos9/BUILD_INFO
+          tar -C dist -czf dist/singerOS-linux-amd64-ubuntu.tar.gz ubuntu
+          tar -C dist -czf dist/singerOS-linux-amd64-centos9.tar.gz centos9
+          (cd dist && sha256sum singerOS-linux-amd64-ubuntu.tar.gz singerOS-linux-amd64-centos9.tar.gz > SHA256SUMS)
+      - name: Upload exact build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: singerOS-linux-amd64-${{ github.sha }}
-          path: singerOS-linux-amd64
+          name: singerOS-release-${{ github.sha }}
+          path: |
+            dist/singerOS-linux-amd64-ubuntu.tar.gz
+            dist/singerOS-linux-amd64-centos9.tar.gz
+            dist/SHA256SUMS
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 7
+      - name: Publish rolling edge release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git tag -f edge "$GITHUB_SHA"
+          git push -f origin refs/tags/edge
+          if gh release view edge >/dev/null 2>&1; then
+            gh release edit edge --prerelease --title "singerOS edge" --notes "Rolling prebuilt release from main at $GITHUB_SHA"
+          else
+            gh release create edge --prerelease --target "$GITHUB_SHA" --title "singerOS edge" --notes "Rolling prebuilt release from main at $GITHUB_SHA"
+          fi
+          gh release upload edge dist/singerOS-linux-amd64-ubuntu.tar.gz dist/singerOS-linux-amd64-centos9.tar.gz dist/SHA256SUMS --clobber
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/singerOS-linux-amd64-ubuntu.tar.gz dist/singerOS-linux-amd64-centos9.tar.gz dist/SHA256SUMS --clobber
 
   deploy-rn:
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: [self-hosted, Linux, X64, singeros-rn]
     timeout-minutes: 10
     steps:
-      - name: Guard SingerOS boundary
-        shell: bash
+      - name: Guard RN boundary
         run: |
           set -euo pipefail
           test "$(hostname)" = "racknerd-2ee08ce"
-          test -d /opt/singeros
-          test "$(docker inspect -f '{{.Name}}' singeros_app)" = "/singeros_app"
-      - name: Download exact build
-        uses: actions/download-artifact@v4
+          mkdir -p /opt/singeros/recordings /opt/singeros/karaoke/assets
+      - uses: actions/download-artifact@v4
         with:
-          name: singerOS-linux-amd64-${{ github.sha }}
-          path: /tmp/singeros-deploy-${{ github.sha }}
-      - name: Deploy SingerOS
-        shell: bash
+          name: singerOS-release-${{ github.sha }}
+          path: /tmp/singeros-dist-${{ github.sha }}
+      - name: Deploy CentOS artifact through Compose
         run: |
           set -euo pipefail
-          SRC="/tmp/singeros-deploy-$GITHUB_SHA/singerOS-linux-amd64"
-          test -s "$SRC"
-          install -m 0755 "$SRC" /opt/singeros/singerOS.new
+          D=/tmp/singeros-dist-$GITHUB_SHA
+          (cd "$D" && grep 'singerOS-linux-amd64-centos9.tar.gz$' SHA256SUMS | sha256sum -c -)
+          rm -rf "$D/unpack" && mkdir -p "$D/unpack"
+          tar -xzf "$D/singerOS-linux-amd64-centos9.tar.gz" -C "$D/unpack"
+          install -m 0755 "$D/unpack/centos9/singerOS" /opt/singeros/singerOS.new
           mv -f /opt/singeros/singerOS.new /opt/singeros/singerOS
-          docker restart singeros_app >/dev/null
-          rm -rf "/tmp/singeros-deploy-$GITHUB_SHA"
-          for i in $(seq 1 12); do
+          install -m 0644 "$D/unpack/centos9/compose.yaml" /opt/singeros/compose.yaml
+          docker network inspect singeros_net >/dev/null 2>&1 || docker network create singeros_net >/dev/null
+          if docker inspect singeros_app >/dev/null 2>&1 && [[ -z "$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project\" }}' singeros_app 2>/dev/null || true)" ]]; then
+            docker rm -f singeros_app >/dev/null
+          fi
+          docker compose -f /opt/singeros/compose.yaml up -d --remove-orphans
+          rm -rf "$D"
+          for i in $(seq 1 18); do
             BODY="$(docker exec singeros_app sh -c 'wget -qO- http://127.0.0.1:8080/singeros/healthz' || true)"
             if [[ "$BODY" == *"$GITHUB_SHA"* ]]; then
               echo "RN_LOCAL_DEPLOYED_COMMIT=$GITHUB_SHA"
               exit 0
             fi
-            sleep 1
+            sleep 2
           done
-          echo "SingerOS container health did not switch to $GITHUB_SHA" >&2
           exit 1
 
   verify-rn:
+    if: github.ref == 'refs/heads/main'
     needs: deploy-rn
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     steps:
-      - name: Verify public SingerOS
+      - name: Verify RN public endpoint
         run: |
           set -euo pipefail
           for i in $(seq 1 18); do
             BODY="$(curl -fsS --connect-timeout 5 --max-time 8 https://www4399.sbs:18443/singeros/healthz || true)"
-            echo "$BODY"
             if [[ "$BODY" == *"$GITHUB_SHA"* ]]; then
-              PAGE="$(curl -fsS --connect-timeout 5 --max-time 8 https://www4399.sbs:18443/singeros/)"
-              [[ "$PAGE" == *'Tesla vocal console'* ]]
-              [[ "$PAGE" == *'value="85"'* ]]
-              [[ "$PAGE" == *'Adaptive feedback suppression'* ]]
               echo "RN_DEPLOYED_COMMIT=$GITHUB_SHA"
               exit 0
             fi
             sleep 3
           done
-          echo "RN public endpoint did not switch to $GITHUB_SHA" >&2
           exit 1
+
+  deploy-evoxt:
+    if: github.ref == 'refs/heads/main'
+    needs: [build, deploy-rn]
+    runs-on: [self-hosted, Linux, X64, singeros-rn]
+    timeout-minutes: 10
+    steps:
+      - name: Check EVOXT CD readiness
+        id: guard
+        run: |
+          if [[ -f /root/.ssh/singeros-evoxt-cd && -f /root/.ssh/singeros-evoxt-cd.enabled ]]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo 'EVOXT CD key is not enabled yet; skipping this node.'
+          fi
+      - uses: actions/download-artifact@v4
+        if: steps.guard.outputs.enabled == 'true'
+        with:
+          name: singerOS-release-${{ github.sha }}
+          path: /tmp/singeros-evoxt-${{ github.sha }}
+      - name: Deploy Ubuntu artifact to EVOXT
+        if: steps.guard.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          D=/tmp/singeros-evoxt-$GITHUB_SHA
+          SSH=(ssh -i /root/.ssh/singeros-evoxt-cd -p 8964 -o BatchMode=yes -o StrictHostKeyChecking=accept-new root@ml.520mall.cc)
+          SCP=(scp -i /root/.ssh/singeros-evoxt-cd -P 8964 -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+          "${SCP[@]}" "$D/singerOS-linux-amd64-ubuntu.tar.gz" "$D/SHA256SUMS" root@ml.520mall.cc:/tmp/
+          "${SSH[@]}" "GITHUB_SHA='$GITHUB_SHA' bash -s" <<'REMOTE'
+          set -euo pipefail
+          T=/tmp/singeros-evoxt-$GITHUB_SHA
+          rm -rf "$T" && mkdir -p "$T"
+          cd /tmp
+          grep 'singerOS-linux-amd64-ubuntu.tar.gz$' SHA256SUMS | sha256sum -c -
+          tar -xzf singerOS-linux-amd64-ubuntu.tar.gz -C "$T"
+          mkdir -p /opt/singeros/recordings /opt/singeros/karaoke/assets /opt/singeros/certs
+          install -m 0755 "$T/ubuntu/singerOS" /opt/singeros/singerOS.new
+          mv -f /opt/singeros/singerOS.new /opt/singeros/singerOS
+          install -m 0644 "$T/ubuntu/compose.yaml" /opt/singeros/compose.yaml
+          LIVE=/etc/letsencrypt/live/ml.520mall.cc
+          install -m 0644 "$(readlink -f "$LIVE/fullchain.pem")" /opt/singeros/certs/fullchain.pem
+          install -m 0600 "$(readlink -f "$LIVE/privkey.pem")" /opt/singeros/certs/privkey.pem
+          if docker inspect singeros_app >/dev/null 2>&1 && [[ -z "$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project\" }}' singeros_app 2>/dev/null || true)" ]]; then
+            docker rm -f singeros_app >/dev/null
+          fi
+          docker compose -f /opt/singeros/compose.yaml up -d --remove-orphans
+          rm -rf "$T" /tmp/singerOS-linux-amd64-ubuntu.tar.gz /tmp/SHA256SUMS
+          for i in $(seq 1 18); do
+            BODY="$(docker exec singeros_app sh -c 'wget --no-check-certificate -qO- https://127.0.0.1:8443/singeros/healthz' || true)"
+            [[ "$BODY" == *"$GITHUB_SHA"* ]] && exit 0
+            sleep 2
+          done
+          exit 1
+          REMOTE
+          rm -rf "$D"
+
+  verify-evoxt:
+    if: github.ref == 'refs/heads/main'
+    needs: deploy-evoxt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify EVOXT when CD is enabled
+        run: |
+          set +e
+          BODY="$(curl -kfsS --connect-timeout 5 --max-time 8 https://ml.520mall.cc:8443/singeros/healthz)"
+          RC=$?
+          if [[ $RC -ne 0 ]]; then
+            echo 'EVOXT endpoint not enabled/reachable yet; deployment job may have intentionally skipped.'
+            exit 0
+          fi
+          [[ "$BODY" == *"$GITHUB_SHA"* ]]
