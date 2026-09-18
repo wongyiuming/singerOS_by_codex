@@ -15,7 +15,7 @@ services:
       - -tls-key
       - /certs/privkey.pem
     ports:
-      - "8443:8443"
+      - "18443:8443"
     volumes:
       - /opt/singeros:/app
       - /opt/singeros/certs:/certs:ro
