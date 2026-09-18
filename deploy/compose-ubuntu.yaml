@@ -1,0 +1,29 @@
+services:
+  singeros:
+    image: alpine:3.22
+    container_name: singeros_app
+    restart: unless-stopped
+    working_dir: /app
+    command:
+      - /app/singerOS
+      - -listen
+      - :8443
+      - -data
+      - /app/recordings
+      - -tls-cert
+      - /certs/fullchain.pem
+      - -tls-key
+      - /certs/privkey.pem
+    ports:
+      - "8443:8443"
+    volumes:
+      - /opt/singeros:/app
+      - /opt/singeros/certs:/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -qO- https://127.0.0.1:8443/singeros/healthz | grep -q '\"ok\":true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
