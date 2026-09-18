@@ -147,6 +147,8 @@ jobs:
     needs: [build, deploy-rn]
     runs-on: [self-hosted, Linux, X64, singeros-rn]
     timeout-minutes: 10
+    outputs:
+      enabled: ${{ steps.guard.outputs.enabled }}
     steps:
       - name: Check EVOXT CD readiness
         id: guard
@@ -155,7 +157,7 @@ jobs:
             echo 'enabled=true' >> "$GITHUB_OUTPUT"
           else
             echo 'enabled=false' >> "$GITHUB_OUTPUT"
-            echo 'EVOXT CD key is not enabled yet; skipping this node.'
+            echo 'EVOXT CD key is not enabled; skipping this node.'
           fi
       - uses: actions/download-artifact@v4
         if: steps.guard.outputs.enabled == 'true'
@@ -184,6 +186,16 @@ jobs:
           LIVE=/etc/letsencrypt/live/ml.520mall.cc
           install -m 0644 "$(readlink -f "$LIVE/fullchain.pem")" /opt/singeros/certs/fullchain.pem
           install -m 0600 "$(readlink -f "$LIVE/privkey.pem")" /opt/singeros/certs/privkey.pem
+          mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+          cat >/etc/letsencrypt/renewal-hooks/deploy/singeros.sh <<'HOOK'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          LIVE=/etc/letsencrypt/live/ml.520mall.cc
+          install -m 0644 "$(readlink -f "$LIVE/fullchain.pem")" /opt/singeros/certs/fullchain.pem
+          install -m 0600 "$(readlink -f "$LIVE/privkey.pem")" /opt/singeros/certs/privkey.pem
+          docker restart singeros_app >/dev/null
+          HOOK
+          chmod 0700 /etc/letsencrypt/renewal-hooks/deploy/singeros.sh
           if docker inspect singeros_app >/dev/null 2>&1 && [[ -z "$(docker inspect -f '{{ index .Config.Labels \"com.docker.compose.project\" }}' singeros_app 2>/dev/null || true)" ]]; then
             docker rm -f singeros_app >/dev/null
           fi
@@ -199,17 +211,19 @@ jobs:
           rm -rf "$D"
 
   verify-evoxt:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && needs.deploy-evoxt.outputs.enabled == 'true'
     needs: deploy-evoxt
     runs-on: ubuntu-latest
     steps:
-      - name: Verify EVOXT when CD is enabled
+      - name: Verify EVOXT public endpoint
         run: |
-          set +e
-          BODY="$(curl -kfsS --connect-timeout 5 --max-time 8 https://ml.520mall.cc:8443/singeros/healthz)"
-          RC=$?
-          if [[ $RC -ne 0 ]]; then
-            echo 'EVOXT endpoint not enabled/reachable yet; deployment job may have intentionally skipped.'
-            exit 0
-          fi
-          [[ "$BODY" == *"$GITHUB_SHA"* ]]
+          set -euo pipefail
+          for i in $(seq 1 18); do
+            BODY="$(curl -fsS --connect-timeout 5 --max-time 8 https://ml.520mall.cc:8443/singeros/healthz || true)"
+            if [[ "$BODY" == *"$GITHUB_SHA"* ]]; then
+              echo "EVOXT_DEPLOYED_COMMIT=$GITHUB_SHA"
+              exit 0
+            fi
+            sleep 3
+          done
+          exit 1
