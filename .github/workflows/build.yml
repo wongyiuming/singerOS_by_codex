@@ -219,7 +219,7 @@ jobs:
         run: |
           set -euo pipefail
           for i in $(seq 1 18); do
-            BODY="$(curl -fsS --connect-timeout 5 --max-time 8 https://ml.520mall.cc:8443/singeros/healthz || true)"
+            BODY="$(curl -fsS --connect-timeout 5 --max-time 8 https://ml.520mall.cc:18443/singeros/healthz || true)"
             if [[ "$BODY" == *"$GITHUB_SHA"* ]]; then
               echo "EVOXT_DEPLOYED_COMMIT=$GITHUB_SHA"
               exit 0
